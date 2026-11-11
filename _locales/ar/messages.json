@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "LeakHalo – عنوان IP، علم الدولة وWebRTC",
+    "description": "Extension name in the Chrome Web Store and browser."
+  },
+  "extDescription": {
+    "message": "ما هو عنوان IP الخاص بي؟ تحقق من IP والـ VPN، وعلم الدولة، واكتشف تسرب WebRTC فوراً من شريط الأدوات.",
+    "description": "Short description in the Chrome Web Store."
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "leakhalo",
+  "version": "1.2.1",
+  "private": true,
+  "description": "LeakHalo: What is my IP, Country & WebRTC Leak Protection.",
+  "scripts": {
+    "test": "node test/run_tests.js && node test/runtime_smoke.js"
+  }
+}

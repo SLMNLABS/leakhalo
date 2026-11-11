@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "short_name": "LeakHalo",
+  "version": "1.2.1",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "privacy",
+    "idle"
+  ],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    },
+    "default_title": "LeakHalo: checking your connection…"
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' https://cloudflare.com https://www.cloudflare.com https://ipv4.icanhazip.com https://ipv6.icanhazip.com https://api.ipify.org https://api6.ipify.org https://checkip.amazonaws.com https://ipwho.is https://get.geojs.io https://ipinfo.io"
+  },
+  "minimum_chrome_version": "120"
+}

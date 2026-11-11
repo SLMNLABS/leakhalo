@@ -1,0 +1,182 @@
+[
+  {
+    "name": "Service worker starts and the first check stores the Cloudflare IP with its location",
+    "ok": true,
+    "ms": 715
+  },
+  {
+    "name": "Toolbar shows the location title without a warning",
+    "ok": true,
+    "ms": 393
+  },
+  {
+    "name": "First install automatically opens exactly one welcome tab with the live Iran connection",
+    "ok": true,
+    "ms": 293
+  },
+  {
+    "name": "Welcome pin guide shows instructions when headless Chrome reports not pinned",
+    "ok": true,
+    "ms": 242
+  },
+  {
+    "name": "Welcome quick setup persists all three preferences and syncs both ways with Settings",
+    "ok": true,
+    "ms": 7296
+  },
+  {
+    "name": "Welcome pin events, visible polling, unavailable APIs and popup rejection degrade gracefully",
+    "ok": true,
+    "ms": 5707
+  },
+  {
+    "name": "Welcome fits desktop Chrome windows (1366×657 and 1920×969 viewports) without overflow",
+    "ok": true,
+    "ms": 8156
+  },
+  {
+    "name": "Welcome reserves connection space and has readable contrast",
+    "ok": true,
+    "ms": 963
+  },
+  {
+    "name": "Popup renders IP, country, city and a sharp rectangular flag",
+    "ok": true,
+    "ms": 223
+  },
+  {
+    "name": "Popup timestamp reports the last check, so an open popup never looks stale",
+    "ok": true,
+    "ms": 8009
+  },
+  {
+    "name": "Default: ipify routed abroad — popup shows only the main country, no warning anywhere",
+    "ok": true,
+    "ms": 22218
+  },
+  {
+    "name": "Opt-in warning: ipify routed abroad — popup never flips, warning appears",
+    "ok": true,
+    "ms": 22308
+  },
+  {
+    "name": "Reopening the popup five times never shows the proxied IP",
+    "ok": true,
+    "ms": 11097
+  },
+  {
+    "name": "Toolbar and notification report the split once, with no false \"IP changed\"",
+    "ok": true,
+    "ms": 12
+  },
+  {
+    "name": "Split routing ends: warning clears on the next check",
+    "ok": true,
+    "ms": 1315
+  },
+  {
+    "name": "Real IP change (VPN connects): popup updates within seconds, one notification",
+    "ok": true,
+    "ms": 6163
+  },
+  {
+    "name": "Staggered switch (edge first, ipify later): exactly one notification, correct \"from\"",
+    "ok": true,
+    "ms": 16007
+  },
+  {
+    "name": "Cloudflare unreachable, new independent answer: held as \"Verifying\" before accepting",
+    "ok": true,
+    "ms": 479
+  },
+  {
+    "name": "Geolocation that never answers: no permanent \"Locating...\"",
+    "ok": true,
+    "ms": 3304
+  },
+  {
+    "name": "Your network: every geolocation service filtered — popup shows the country Cloudflare reports",
+    "ok": true,
+    "ms": 710
+  },
+  {
+    "name": "A leftover placeholder (interrupted check) resolves on the next check; PS shows as Palestine",
+    "ok": true,
+    "ms": 502
+  },
+  {
+    "name": "All providers down: \"Unable to verify network\" and ERR badge; recovery restores",
+    "ok": true,
+    "ms": 16927
+  },
+  {
+    "name": "IPv6 present in another country: IPv6 card and Split Route pill",
+    "ok": true,
+    "ms": 15884
+  },
+  {
+    "name": "Settings page: badge modes change the toolbar; notifications switch is honoured",
+    "ok": true,
+    "ms": 8922
+  },
+  {
+    "name": "Armor: WebRTC policy is applied by this extension and the shield toggles it",
+    "ok": true,
+    "ms": 720
+  },
+  {
+    "name": "Instant detection: popup closed, alarm cleared — a change shows in the toolbar within a few seconds",
+    "ok": true,
+    "ms": 1875
+  },
+  {
+    "name": "Every IP provider failing for a few seconds (a VPN switching) keeps the flag instead of ERR",
+    "ok": true,
+    "ms": 9166
+  },
+  {
+    "name": "Instant detection: the Settings switch disables and reenables watcher",
+    "ok": true,
+    "ms": 1044
+  },
+  {
+    "name": "Offline or with the server blocked, the extension records no errors in Chrome",
+    "ok": true,
+    "ms": 21093
+  },
+  {
+    "name": "Connection lost while Chrome still reports online: \"Offline\" within seconds, not ERR or the old countries",
+    "ok": true,
+    "ms": 6823
+  },
+  {
+    "name": "Chrome reports offline: toolbar shows it at once and recovers within seconds (popup closed)",
+    "ok": true,
+    "ms": 6033
+  },
+  {
+    "name": "Time zone hint: matches for an Iranian IP, warns when the IP is in another time zone",
+    "ok": true,
+    "ms": 6318
+  },
+  {
+    "name": "Popup states: unknown country, IPv6-only network, map links off, last known result",
+    "ok": true,
+    "ms": 15214
+  },
+  {
+    "name": "IPv6 change alerts follow their own switch",
+    "ok": true,
+    "ms": 5763
+  },
+  {
+    "name": "Request volume while the popup is open stays bounded",
+    "ok": true,
+    "ms": 15001
+  },
+  {
+    "name": "No console/page errors or external page requests from welcome; no JavaScript errors elsewhere",
+    "ok": true,
+    "ms": 1
+  }
+]
