@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "LeakHalo: Mio IP, paese e WebRTC Leak",
+    "description": "Extension name in the Chrome Web Store and browser."
+  },
+  "extDescription": {
+    "message": "Qual è il mio IP? Visualizza l'IP della VPN, la bandiera del paese e rileva le perdite WebRTC dalla barra strumenti.",
+    "description": "Short description in the Chrome Web Store."
+  }
+}
