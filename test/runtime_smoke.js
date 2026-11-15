@@ -18,6 +18,8 @@ let prediction = true;
 let networkMode = 'normal';
 let policyChangeListener;
 let currentV4 = '198.51.100.22';
+let currentV6 = null;
+let rateLimitCfPrimary = false;
 let alarmPeriod = 1;
 let geoGate = null;
 let geoStarted = null;
@@ -60,20 +62,31 @@ const chrome = {
   },
   tabs: { async create(options) { createdTabs.push(options); } },
   alarms: { get: async (_name) => (alarmPeriod ? { periodInMinutes: alarmPeriod } : undefined), async create(_name, info) { alarmPeriod = info.periodInMinutes; }, async clear() { alarmPeriod = 0; return true; }, onAlarm: event },
-  storage: { local: {
-    get(keys, callback) {
-      const names = typeof keys === 'string' ? [keys] : keys;
-      const found = Object.fromEntries(names.map(name => [name, data[name]]));
-      if (callback) callback(found);
-      if (toolbarGetGate && names.includes('routeDivergence')) { const gate = toolbarGetGate; toolbarGetGate = null; return gate.then(() => found); }
-      return Promise.resolve(found);
+  storage: {
+    local: {
+      get(keys, callback) {
+        const names = typeof keys === 'string' ? [keys] : keys;
+        const found = Object.fromEntries(names.map(name => [name, data[name]]));
+        if (callback) callback(found);
+        if (toolbarGetGate && names.includes('routeDivergence')) { const gate = toolbarGetGate; toolbarGetGate = null; return gate.then(() => found); }
+        return Promise.resolve(found);
+      },
+      async set(values) { Object.assign(data, values); },
+      async remove(keys) { for (const key of [].concat(keys)) delete data[key]; }
     },
-    async set(values) { Object.assign(data, values); },
-    async remove(keys) { for (const key of [].concat(keys)) delete data[key]; }
-  } },
+    session: {
+      async get(keys) {
+        const names = typeof keys === 'string' ? [keys] : keys;
+        return Object.fromEntries(names.map(name => [name, data[name]]));
+      },
+      async set(values) { Object.assign(data, values); },
+      async clear() { }
+    }
+  },
   action: {
     setIcon: async (icon) => { toolbar.icon = icon; }, setBadgeText: async ({ text }) => { toolbar.badge = text; },
-    setBadgeBackgroundColor: async ({ color }) => { toolbar.color = color; }, setTitle: async ({ title }) => { toolbar.title = title; }
+    setBadgeBackgroundColor: async ({ color }) => { toolbar.color = color; }, setBadgeTextColor: async ({ color }) => { toolbar.textColor = color; },
+    setTitle: async ({ title }) => { toolbar.title = title; }
   },
   notifications: { create: (_id, options, callback) => {
     if (notifyFails) { chrome.runtime.lastError = { message: 'Unable to download all specified images.' }; callback?.(); delete chrome.runtime.lastError; return; }
@@ -99,6 +112,7 @@ const context = vm.createContext({
   async fetch(url) {
     requests.push(url);
     if (networkMode === 'failed') return result('', false);
+    if (url.startsWith('https://cloudflare.com/') && rateLimitCfPrimary) return result('', false, 429, { 'Retry-After': '60' });
     if (url.startsWith('https://cloudflare.com/') || url.startsWith('https://www.cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${cloudflareV6 ? '2001:db8::5' : currentV4}\nloc=${cloudflareLoc}\n`);
     if (url.startsWith('https://ipv4.icanhazip.com')) return cloudflareDown ? result('', false) : result(`${currentV4}\n`);
     if (new URL(url).hostname === 'api.ipify.org') {
@@ -107,14 +121,14 @@ const context = vm.createContext({
         ? result('', false, 429, { 'Retry-After': '60' })
         : ipifyV4 === 'down' ? result('', false) : result({ ip: ipifyV4 || currentV4 });
     }
-    if (url.startsWith('https://api6.ipify.org/')) return result({ ip: 'invalid' });
-    if (url.startsWith('https://ipv6.icanhazip.com/')) return result('invalid');
+    if (url.startsWith('https://api6.ipify.org')) return currentV6 ? result({ ip: currentV6 }) : result({ ip: 'invalid' });
+    if (url.startsWith('https://ipv6.icanhazip.com')) return currentV6 ? result(`${currentV6}\n`) : result('invalid');
     if (geoDown && /ipwho\.is|geojs\.io|ipinfo\.io/.test(url)) return result('', false, 503);
     if (url.startsWith('https://ipwho.is/')) {
       if (geoGate) { notifyGeoStarted(); await geoGate; }
       return result({
         success: true, ip: currentV4,
-        ...(url.includes(PROXIED_V4) ? { country_code: 'AZ', country: 'Azerbaijan' } : { country_code: 'US', country: 'United States' }),
+        ...(url.includes(PROXIED_V4) ? { country_code: 'AZ', country: 'Azerbaijan' } : url.includes('2001:db8::') ? { country_code: 'DE', country: 'Germany', city: 'Frankfurt' } : { country_code: 'US', country: 'United States' }),
         connection: { isp: 'Example ISP', asn: 64500 }
       });
     }
@@ -874,6 +888,31 @@ async function main() {
     assert.equal(createdTabs.length, 1, `${reason} must not open a welcome tab`);
   }
   await vm.runInContext('stopWatcher()', context);
+
+  // Dual-stack IPv6 + watcher cooldown regressions
+  context.navigator.onLine = true;
+  networkMode = 'normal';
+  currentV6 = '2001:db8::10';
+  data.appSettings.enableNotifications = true;
+  data.lastNotifTimeIPv6 = 0;
+  const dual = await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(dual.v6Info.ip, '2001:db8::10');
+  assert.equal(dual.v6Info.countryCode, 'DE');
+  assert.equal(data.latestV6Info.pending, undefined, 'IPv6 geo must commit without throwing ReferenceError');
+  assert.equal(data.announcedCountries.IPv6, 'DE');
+
+  currentV6 = null;
+  rateLimitCfPrimary = true;
+  vm.runInContext('watcherRunning = true; traceSucceededOnce = true; traceFailureTriggered = false', context);
+  const probesBeforeCooldown = requests.filter(u => u.includes('api.ipify.org')).length;
+  for (let i = 0; i < 4; i++) {
+    await vm.runInContext('runWatcherTick()', context);
+    await vm.runInContext('activeProbePromise', context);
+  }
+  assert.equal(requests.filter(u => u.includes('api.ipify.org')).length, probesBeforeCooldown, 'Single cooled-down trace URL must not trigger probe storm');
+  rateLimitCfPrimary = false;
+  await vm.runInContext('stopWatcher()', context);
+
   console.log('First-install welcome tab runtime tests passed');
   console.log('Background runtime smoke tests passed');
   process.exit(0);

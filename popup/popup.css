@@ -39,7 +39,6 @@ body {
   min-width: 390px;
   min-height: 240px;
   height: fit-content;
-  background: var(--bg-canvas);
   background: radial-gradient(circle at 50% 0%, #171d2c 0%, #0b0e14 80%);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -129,10 +128,10 @@ body {
 }
 
 .ghost-btn {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  outline: none !important;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  outline: none;
   color: #94a3b8;
   cursor: pointer;
   width: 32px;
@@ -147,12 +146,12 @@ body {
 
 .ghost-btn:hover {
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .ghost-btn:focus-visible {
-  outline: 2px solid rgba(56, 189, 248, 0.5) !important;
-  background: rgba(255, 255, 255, 0.06) !important;
+  outline: 2px solid rgba(56, 189, 248, 0.5);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .ghost-btn:active {
@@ -276,6 +275,12 @@ body {
   display: block;
 }
 
+.squircle-flag:not([data-code]) {
+  object-fit: contain;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .country-meta {
   display: flex;
   flex-direction: column;
@@ -369,20 +374,7 @@ body {
   border: 1px solid rgba(239, 68, 68, 0.28);
 }
 
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
 
-.status-dot.online {
-  background-color: var(--status-green);
-}
-
-.status-dot.offline {
-  background-color: var(--text-muted);
-}
 
 .location-wrapper {
   display: flex;
@@ -511,15 +503,20 @@ body {
   right: calc(100% + 6px);
   top: 50%;
   transform: translateY(-50%);
-  padding: 2px 6px;
+  padding: 2px 7px;
   border-radius: 5px;
-  background: #1e293b;
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   font-size: 10.5px;
   font-weight: 600;
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
+  z-index: 5;
 }
 
 .ip-hero-row:hover .copy-feedback,
@@ -539,7 +536,7 @@ body {
 }
 
 .ip-hero-row.copied .copy-icon {
-  display: none !important;
+  stroke: #4ade80;
 }
 
 .ip-hero-row.copied .copy-feedback {
@@ -592,6 +589,7 @@ body {
 
 .tz-val.tz-match::after { content: "\00a0✓"; color: #34d399; }
 .tz-val.tz-mismatch { color: #fbbf24; }
+.tz-val.tz-mismatch::after { content: "\00a0!"; font-weight: 700; }
 
 .route-alert {
   background: rgba(245, 158, 11, 0.08);
@@ -725,7 +723,7 @@ body {
   background: rgba(15, 23, 42, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 10px;
-  padding: 8px 12px;
+  padding: 8px 8px;
   margin-top: 2px;
 }
 
@@ -734,6 +732,7 @@ body {
   align-items: center;
   gap: 6px;
   font-size: 11px;
+  white-space: nowrap;
   cursor: help;
   user-select: none;
 }
@@ -855,4 +854,77 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+#webrtcItem.is-clickable {
+  cursor: pointer;
+  padding: 3px 8px;
+  margin: -3px -8px;
+  border-radius: 6px;
+}
+
+#webrtcItem.is-clickable:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+#webrtcItem.is-clickable:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.5);
+}
+
+#webrtcItem {
+  user-select: none;
+}
+
+.review-nudge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: rgba(56, 189, 248, 0.06);
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  border-radius: 10px;
+  padding: 7px 11px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.review-nudge-copy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.review-link {
+  color: var(--accent-blue);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.review-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.review-link:focus-visible,
+.review-close:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.5);
+  border-radius: 4px;
+}
+
+.review-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  line-height: 1;
+  font-size: 11px;
+}
+
+.review-close:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
 }

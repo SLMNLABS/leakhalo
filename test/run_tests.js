@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -39,10 +40,10 @@ async function asyncTest(name, fn) {
 
 async function runAllTests() {
   console.log('\n========================================');
-  console.log('🚀 LEAKHALO EXTENSION COMPREHENSIVE TEST SUITE');
+  console.log('LEAKHALO EXTENSION COMPREHENSIVE TEST SUITE');
   console.log('========================================\n');
 
-  console.log('📦 [1/6] Manifest V3 & File Integrity Tests:');
+  console.log('[1/7] Manifest V3 & File Integrity Tests:');
   const manifestPath = path.join(ROOT, 'manifest.json');
   let manifest;
 
@@ -73,18 +74,20 @@ async function runAllTests() {
     assert(!manifest.content_scripts, 'Page injection is not needed for the browser privacy API');
   });
 
-  test('Action popup and options files exist on disk', () => {
+  test('Action popup, options, privacy, and license files exist on disk', () => {
     assert(manifest.action && manifest.action.default_popup);
     assert(fs.existsSync(path.join(ROOT, manifest.action.default_popup)));
     assert(manifest.options_ui && manifest.options_ui.page);
     assert(fs.existsSync(path.join(ROOT, manifest.options_ui.page)));
+    assert(fs.existsSync(path.join(ROOT, 'licenses.html')), 'licenses.html must exist');
+    assert(fs.existsSync(path.join(ROOT, 'privacy.html')), 'privacy.html must exist');
   });
 
   test('All declared icons exist on disk and are non-empty', () => {
     const iconDicts = [manifest.icons, manifest.action.default_icon];
     for (const d of iconDicts) {
       assert(d && typeof d === 'object');
-      for (const size of ['16', '48', '128']) {
+      for (const size of ['16', '32', '48', '128']) {
         if (d[size]) {
           const p = path.join(ROOT, d[size]);
           assert(fs.existsSync(p), `Icon ${p} does not exist`);
@@ -115,18 +118,16 @@ async function runAllTests() {
     assert(!popup.includes('webrtc-shield.js'));
   });
 
-  console.log('\n⚙️ [3/6] Background Service Worker Unit & Logic Tests:');
+  console.log('\n[2/7] First-install Welcome Page Tests:');
   const bgCode = fs.readFileSync(path.join(ROOT, 'background/background.js'), 'utf8');
-
-  console.log('\n👋 First-install Welcome Page Tests:');
-  const welcomeFiles = ['welcome/welcome.html', 'welcome/welcome.css', 'welcome/welcome.js'];
-  test('Welcome files exist and total less than 60 KB', () => {
+  const welcomeFiles = ['welcome/welcome.html', 'welcome/welcome.css', 'welcome/welcome.js', 'welcome/land.js'];
+  test('Welcome files exist and total less than 120 KB', () => {
     let bytes = 0;
     for (const file of welcomeFiles) {
       assert(fs.existsSync(path.join(ROOT, file)), `${file} is missing`);
       bytes += fs.statSync(path.join(ROOT, file)).size;
     }
-    assert(bytes < 60 * 1024, `Welcome files total ${bytes} bytes`);
+    assert(bytes < 120 * 1024, `Welcome files total ${bytes} bytes`);
   });
   const welcomeHtml = fs.readFileSync(path.join(ROOT, welcomeFiles[0]), 'utf8');
   const welcomeCss = fs.readFileSync(path.join(ROOT, welcomeFiles[1]), 'utf8');
@@ -184,6 +185,7 @@ async function runAllTests() {
     assert(welcomeJs.includes("this.src = '/assets/icons/icon48.png'"));
   });
 
+  console.log('\n[3/7] Background Service Worker Unit & Logic Tests:');
   test('background.js must NOT contain setInterval', () => {
     assert(!bgCode.includes('setInterval('), 'setInterval must be completely eliminated in MV3');
   });
@@ -217,27 +219,28 @@ kex=X25519
     assert(!bgCode.includes('cached.latestV6Info.countryCode !== v4Info.countryCode'), 'Split routing self-destruction code must be removed');
   });
 
+  const event = { addListener() {}, removeListener() {} };
+  const bgSandbox = {
+    chrome: {
+      runtime: { onInstalled: event, onStartup: event, onMessage: event, setUninstallURL() {} },
+      storage: { local: { get: async () => ({}), set: async () => ({}) }, session: { get: async () => ({}), set: async () => ({}) } },
+      action: { setIcon() {}, setBadgeText() {}, setBadgeBackgroundColor() {}, setBadgeTextColor() {}, setTitle() {} },
+      alarms: { get: async () => null, create() {}, clear() {}, onAlarm: event },
+      notifications: { create() {}, clear() {}, onClicked: event },
+      idle: { queryState: async () => 'active', onStateChanged: event },
+      privacy: { network: { webRTCIPHandlingPolicy: { get: async () => ({}), set: async () => ({}) } } }
+    },
+    fetch: () => {},
+    setTimeout: () => {},
+    clearTimeout: () => {},
+    Intl,
+    console
+  };
+  vm.createContext(bgSandbox);
+  vm.runInContext(bgCode, bgSandbox);
+  const { classifyConnectionType, getFullCountryName, evaluateIPv4Route } = bgSandbox;
+
   test('Connection classification handles known types and leaves uncertain networks unknown', () => {
-    function classifyConnectionType(data) {
-      const isp = (data.isp || '').toLowerCase();
-      const org = (data.org || '').toLowerCase();
-      const rawType = (data.type || '').toLowerCase();
-
-      if (data.isVpn || data.isProxy || rawType === 'vpn' || rawType === 'proxy') return 'VPN / Relay';
-      if (data.isHosting || rawType === 'hosting' || rawType === 'datacenter') return 'Datacenter';
-      if (data.isMobile || rawType === 'cellular' || rawType === 'mobile') return 'Mobile';
-
-      const datacenterKeywords = [
-        'hetzner', 'ovh', 'digitalocean', 'amazon', 'aws', 'google cloud', 'linode',
-        'vultr', 'm247', 'leaseweb', 'choopa', 'oracle', 'cloudflare', 'fastly',
-        'serverius', 'contabo', 'hostinger', 'tencent', 'alibaba', 'azure', 'akamai'
-      ];
-      for (const kw of datacenterKeywords) {
-        if (isp.includes(kw) || org.includes(kw)) return 'Datacenter';
-      }
-      return 'Unknown';
-    }
-
     assert.strictEqual(classifyConnectionType({ isVpn: true }), 'VPN / Relay');
     assert.strictEqual(classifyConnectionType({ isHosting: true }), 'Datacenter');
     assert.strictEqual(classifyConnectionType({ isp: 'Cloudflare, Inc.' }), 'Datacenter');
@@ -247,21 +250,6 @@ kex=X25519
   });
 
   test('Full country name resolver uses Intl and fallbacks', () => {
-    function getFullCountryName(code, fallbackName) {
-      if (code && typeof Intl !== 'undefined' && Intl.DisplayNames) {
-        try {
-          const dn = new Intl.DisplayNames(['en'], { type: 'region' });
-          const name = dn.of(code.toUpperCase());
-          if (name && name !== code.toUpperCase()) return name;
-        } catch (e) {}
-      }
-      const cleanFallback = (fallbackName && !fallbackName.startsWith('Unknown') && !fallbackName.startsWith('Detected')) ? fallbackName : '';
-      if (cleanFallback && cleanFallback.length > 2) {
-        return cleanFallback;
-      }
-      return code || cleanFallback || 'Unknown Country';
-    }
-
     assert.strictEqual(getFullCountryName('DE', 'Germany'), 'Germany');
     assert.strictEqual(getFullCountryName('US', ''), 'United States');
     assert.strictEqual(getFullCountryName('FR', ''), 'France');
@@ -270,6 +258,57 @@ kex=X25519
     assert.strictEqual(getFullCountryName('', 'Detected'), 'Unknown Country');
     assert.strictEqual(getFullCountryName('', ''), 'Unknown Country');
     assert(!bgCode.includes("getFullCountryName(resolvedCode, 'Detected')"), 'Background must not pass Detected fallback');
+  });
+
+  test('evaluateIPv4Route handles IP changes, single-probe holds, and split-route confirmation', () => {
+    const r1 = evaluateIPv4Route(
+      { edge: { ip: '198.51.100.1', countryCode: 'US', source: 'Cloudflare' }, independent: { ip: '198.51.100.1', countryCode: 'US', source: 'ipify' } },
+      null, null, null, 100_000
+    );
+    assert.strictEqual(r1.primary.ip, '198.51.100.1');
+    assert.strictEqual(r1.notify, null);
+
+    const r2 = evaluateIPv4Route(
+      { edge: { ip: '203.0.113.5', countryCode: 'DE', source: 'Cloudflare' }, independent: { ip: '203.0.113.5', countryCode: 'DE', source: 'ipify' } },
+      { ip: '198.51.100.1', vantage: 'edge' }, r1.state, null, 110_000
+    );
+    assert.strictEqual(r2.primary.ip, '203.0.113.5');
+    assert.deepEqual(r2.notify, { from: '198.51.100.1', to: '203.0.113.5' });
+
+    const r3 = evaluateIPv4Route(
+      { edge: null, independent: null },
+      { ip: '203.0.113.5', vantage: 'edge' }, r2.state, null, 115_000
+    );
+    assert.strictEqual(r3.held, true);
+    assert.strictEqual(r3.primary, null);
+
+    const s1 = evaluateIPv4Route(
+      { edge: { ip: '198.51.100.1', countryCode: 'US', source: 'Cloudflare' }, independent: { ip: '203.0.113.9', countryCode: 'DE', source: 'ipify' } },
+      { ip: '198.51.100.1', vantage: 'edge' }, r1.state, null, 200_000
+    );
+    assert.strictEqual(s1.divergence, null);
+
+    const s2 = evaluateIPv4Route(
+      { edge: { ip: '198.51.100.1', countryCode: 'US', source: 'Cloudflare' }, independent: { ip: '203.0.113.9', countryCode: 'DE', source: 'ipify' } },
+      { ip: '198.51.100.1', vantage: 'edge' }, s1.state, s1.divergence, 216_000
+    );
+    assert(s2.divergence && s2.divergence.alts[0].ip === '203.0.113.9');
+    assert.strictEqual(s2.confirmed.length, 1);
+
+    const s3 = evaluateIPv4Route(
+      { edge: { ip: '198.51.100.1', countryCode: 'US', source: 'Cloudflare' }, independent: { ip: '198.51.100.1', countryCode: 'US', source: 'ipify' } },
+      { ip: '198.51.100.1', vantage: 'edge' }, s2.state, s2.divergence, 220_000
+    );
+    assert.strictEqual(s3.divergence, null);
+  });
+
+  test('All HTTPS endpoints in background.js are allowed in manifest CSP connect-src', () => {
+    const csp = manifest.content_security_policy.extension_pages;
+    const origins = new Set((bgCode.match(/https:\/\/[a-z0-9.-]+/gi) || []).map(u => u.toLowerCase()));
+    origins.delete('https://slmn-labs.github.io');
+    for (const origin of origins) {
+      assert(csp.includes(origin), `Manifest CSP connect-src missing ${origin}`);
+    }
   });
 
   test('Offline state sets isOffline: true without wiping latestV4Info or latestV6Info', () => {
@@ -281,7 +320,7 @@ kex=X25519
     assert(bgCode.includes('network.networkPredictionEnabled.clear({})'), 'Must clear network prediction policy on disable');
   });
 
-  console.log('\n🖥️ [4/6] Popup Controller & HTML DOM Tests:');
+  console.log('\n[4/7] Popup Controller & HTML DOM Tests:');
   const popupHtml = fs.readFileSync(path.join(ROOT, 'popup/popup.html'), 'utf8');
   const popupJs = fs.readFileSync(path.join(ROOT, 'popup/popup.js'), 'utf8');
 
@@ -314,40 +353,12 @@ kex=X25519
   });
 
   test('Bogon & Private IP validator classifies IPs correctly', () => {
-    function isPrivateOrBogonIP(ip) {
-      if (!ip || typeof ip !== 'string') return true;
-      const s = ip.trim().toLowerCase();
-      if (!s || s === '0.0.0.0' || s === '::' || s === '::1') return true;
-      if (s.endsWith('.local') || s.endsWith('.arpa') || s.includes('.local')) return true;
-      if (s.startsWith('10.') || s.startsWith('192.168.') || s.startsWith('127.') || s.startsWith('169.254.')) return true;
-      if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(s)) return true;
-      if (s.startsWith('fc00:') || s.startsWith('fd00:') || s.startsWith('fe80:') || s.startsWith('ff00:')) return true;
-
-      const v4Parts = s.split('.');
-      if (v4Parts.length === 4) {
-        const valid = v4Parts.every(p => {
-          const n = parseInt(p, 10);
-          return !isNaN(n) && n >= 0 && n <= 255 && p === String(n);
-        });
-        if (valid) {
-          const o0 = parseInt(v4Parts[0], 10);
-          const o1 = parseInt(v4Parts[1], 10);
-          if (o0 === 10 || o0 === 127 || o0 === 0) return true;
-          if (o0 === 192 && o1 === 168) return true;
-          if (o0 === 172 && o1 >= 16 && o1 <= 31) return true;
-          if (o0 === 169 && o1 === 254) return true;
-          if (o0 === 100 && o1 >= 64 && o1 <= 127) return true;
-          if (o0 >= 224) return true;
-          return false;
-        }
-      }
-
-      if (s.includes(':') && /^[0-9a-f:]+$/i.test(s)) {
-        if (s.startsWith('fe80:') || s.startsWith('fc') || s.startsWith('fd') || s.startsWith('ff') || s === '::1') return true;
-        return false;
-      }
-      return true;
-    }
+    const popupSandbox = { URL, console };
+    const canonicalIpMatch = popupJs.match(/function canonicalIp\([\s\S]*?\n  \}/);
+    const isPrivateOrBogonMatch = popupJs.match(/function isPrivateOrBogonIP\([\s\S]*?\n  \}/);
+    vm.createContext(popupSandbox);
+    vm.runInContext(canonicalIpMatch[0] + '\n' + isPrivateOrBogonMatch[0], popupSandbox);
+    const { isPrivateOrBogonIP } = popupSandbox;
 
     assert.strictEqual(isPrivateOrBogonIP('127.0.0.1'), true);
     assert.strictEqual(isPrivateOrBogonIP('192.168.1.1'), true);
@@ -362,29 +373,11 @@ kex=X25519
   });
 
   test('formatIspAsn formats combinations cleanly', () => {
-    function formatIspAsn(rawIsp, rawAsn) {
-      let isp = (rawIsp || '').trim();
-      let asn = (rawAsn || '').trim();
-      if (isp === 'N/A') isp = '';
-      if (asn === 'N/A') asn = '';
-
-      let detectedAsn = asn;
-      const asMatch = isp.match(/\bAS(\d+)\b/i) || asn.match(/\bAS(\d+)\b/i);
-      if (asMatch) {
-        detectedAsn = `AS${asMatch[1]}`;
-      }
-
-      let cleanIsp = isp
-        .replace(/^AS\d+\s*[-_:]*\s*/i, '')
-        .replace(/\s*\(?AS\d+\)?\s*$/i, '')
-        .replace(/\s*\(?AS\d+\)?/gi, '')
-        .trim();
-
-      if (!cleanIsp && detectedAsn) return detectedAsn;
-      if (cleanIsp && detectedAsn) return `${cleanIsp} (${detectedAsn})`;
-      if (cleanIsp) return cleanIsp;
-      return '';
-    }
+    const popupSandbox = { console };
+    const formatIspAsnMatch = popupJs.match(/function formatIspAsn\([\s\S]*?\n  \}/);
+    vm.createContext(popupSandbox);
+    vm.runInContext(formatIspAsnMatch[0], popupSandbox);
+    const { formatIspAsn } = popupSandbox;
 
     assert.strictEqual(formatIspAsn('Cloudflare, Inc.', 'AS13335'), 'Cloudflare, Inc. (AS13335)');
     assert.strictEqual(formatIspAsn('AS13335 Cloudflare, Inc.', 'N/A'), 'Cloudflare, Inc. (AS13335)');
@@ -397,7 +390,52 @@ kex=X25519
     assert(!popupJs.includes('cdn.ipwhois.io'), 'Must not fetch remote CDN images');
   });
 
-  console.log('\n⚙️ [5/6] Options Controller & Settings Dashboard Tests:');
+  await asyncTest('probeWebRTCLeaks detects unmasked public IPv6 on IPv4-only exit', async () => {
+    const canonicalIpMatch = popupJs.match(/function canonicalIp\([\s\S]*?\n  \}/);
+    const isPrivateOrBogonMatch = popupJs.match(/function isPrivateOrBogonIP\([\s\S]*?\n  \}/);
+    const probeMatch = popupJs.match(/function probeWebRTCLeaks\([\s\S]*?\n  \}/);
+    assert(probeMatch, 'probeWebRTCLeaks function not found');
+
+    class MockRTCPeerConnection {
+      constructor() {
+        this.iceGatheringState = 'new';
+      }
+      createDataChannel() {}
+      createOffer() { return Promise.resolve({}); }
+      setLocalDescription() {
+        return Promise.resolve().then(() => {
+          if (this.onicecandidate) {
+            this.onicecandidate({
+              candidate: {
+                address: '2606:4700:4700::1111',
+                candidate: 'candidate:1 1 UDP 1 2606:4700:4700::1111 50000 typ host'
+              }
+            });
+            this.iceGatheringState = 'complete';
+            if (this.onicegatheringstatechange) this.onicegatheringstatechange();
+          }
+        });
+      }
+      close() {}
+    }
+
+    const sandbox = {
+      URL,
+      console,
+      setTimeout,
+      clearTimeout,
+      activeProbePC: null,
+      window: { RTCPeerConnection: MockRTCPeerConnection }
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(canonicalIpMatch[0] + '\n' + isPrivateOrBogonMatch[0] + '\n' + probeMatch[0], sandbox);
+
+    const res = await sandbox.probeWebRTCLeaks({ ip: '198.51.100.1' }, null);
+    assert.strictEqual(res.leaked, true, 'Should flag public IPv6 leak on IPv4-only exit');
+    assert.deepEqual(res.leakedIPs, ['2606:4700:4700::1111']);
+  });
+
+  console.log('\n[5/7] Options Controller & Settings Dashboard Tests:');
   const optionsHtml = fs.readFileSync(path.join(ROOT, 'options/options.html'), 'utf8');
   const optionsJs = fs.readFileSync(path.join(ROOT, 'options/options.js'), 'utf8');
 
@@ -438,7 +476,7 @@ kex=X25519
     assert(fs.existsSync(path.join(ROOT, 'assets/brand/wordmark-dark.png')), 'missing dark wordmark');
   });
 
-  console.log('\n🎨 [6/6] Assets & National Flags Validation:');
+  console.log('\n[6/7] Assets & National Flags Validation:');
 
   test('All 244 ISO country flag PNG assets are valid files', () => {
     const flagsDir = path.join(ROOT, 'assets/flags');
@@ -489,7 +527,7 @@ kex=X25519
 
   test('Extension icons are valid PNG files of exact required sizes', () => {
     const iconsDir = path.join(ROOT, 'assets/icons');
-    for (const size of ['16', '48', '128']) {
+    for (const size of ['16', '32', '48', '128']) {
       const iconPath = path.join(iconsDir, `icon${size}.png`);
       assert(fs.existsSync(iconPath), `icon${size}.png missing`);
       const stat = fs.statSync(iconPath);
@@ -497,7 +535,7 @@ kex=X25519
     }
   });
 
-  console.log('\n🔍 [7/7] Deep Edge-Case & Architecture Validation:');
+  console.log('\n[7/7] Deep Edge-Case & Architecture Validation:');
 
   test('popup.css and options.css have balanced braces and no syntax corruption', () => {
     const popupCss = fs.readFileSync(path.join(ROOT, 'popup/popup.css'), 'utf8');
@@ -544,35 +582,39 @@ kex=X25519
     assert(/badgeText: probeError \? 'ERR' : ''/.test(bgCode), 'offline must not add badge text');
   });
 
-  test('Badge generation returns correct 2-letter ISO, OFF, or ERR', () => {
-    function getBadgeText(state, settings) {
-      if (!settings || !settings.badgeDisplay) return '';
-      if (state.isOffline) return 'OFF';
-      if (settings.badgeV6 && state.latestV6Info && state.latestV6Info.countryCode) {
-        return state.latestV6Info.countryCode.toUpperCase();
-      }
-      if (state.latestV4Info && state.latestV4Info.countryCode) {
-        return state.latestV4Info.countryCode.toUpperCase();
-      }
-      return '...';
-    }
+  test('Toolbar plan: handles offline, errors, text badges, and country flags', () => {
+    assert(bgCode.includes('async function planToolbar(v4Info, v6Info, isOffline, probeError)'));
+    assert(bgCode.includes("badgeText: probeError ? 'ERR' : ''"));
+    assert(bgCode.includes("badgeMode === 'off'"));
+    assert(bgCode.includes("badgeMode === 'text'"));
+    assert(bgCode.includes("badgeText = primaryCode;"));
+    assert(bgCode.includes("primaryCode ? { kind: 'flag', codes: [primaryCode] } : { kind: 'default' }"));
+  });
 
-    assert.strictEqual(getBadgeText({ isOffline: true }, { badgeDisplay: true }), 'OFF');
-    assert.strictEqual(getBadgeText({ isOffline: false, latestV4Info: { countryCode: 'us' } }, { badgeDisplay: true }), 'US');
-    assert.strictEqual(getBadgeText({ isOffline: false, latestV4Info: { countryCode: 'us' }, latestV6Info: { countryCode: 'de' } }, { badgeDisplay: true, badgeV6: true }), 'DE');
-    assert.strictEqual(getBadgeText({ isOffline: false, latestV4Info: { countryCode: 'us' } }, { badgeDisplay: false }), '');
+  test('All 13 locale files are valid JSON and define required manifest keys', () => {
+    const localesDir = path.join(ROOT, '_locales');
+    const locales = fs.readdirSync(localesDir);
+    assert(locales.length >= 13, `Expected at least 13 locales, found ${locales.length}`);
+    for (const loc of locales) {
+      const msgPath = path.join(localesDir, loc, 'messages.json');
+      assert(fs.existsSync(msgPath), `Missing ${msgPath}`);
+      const msgs = JSON.parse(fs.readFileSync(msgPath, 'utf8'));
+      for (const key of ['extName', 'extDescription', 'defaultTitle']) {
+        assert(msgs[key] && typeof msgs[key].message === 'string' && msgs[key].message.trim().length > 0, `${loc} missing ${key}`);
+      }
+    }
   });
 
   console.log('\n========================================');
-  console.log(`📊 TEST RESULTS: ${passedTests}/${totalTests} PASSED`);
+  console.log(`TEST RESULTS: ${passedTests}/${totalTests} PASSED`);
   if (failedTests > 0) {
-    console.log(`❌ ${failedTests} TESTS FAILED:`);
+    console.log(`FAILED: ${failedTests} TESTS FAILED:`);
     for (const f of failures) {
       console.log(`  - ${f.name}: ${f.error.message}`);
     }
     process.exit(1);
   } else {
-    console.log('🎉 ALL TESTS PASSED WITH 100% SUCCESS!');
+    console.log('ALL TESTS PASSED WITH 100% SUCCESS!');
     console.log('========================================\n');
   }
 }

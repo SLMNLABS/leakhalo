@@ -52,21 +52,38 @@ document.addEventListener('DOMContentLoaded', () => {
   const webrtcDot = document.getElementById('webrtcDot');
   const webrtcStatus = document.getElementById('webrtcStatus');
 
+  const reviewNudge = document.getElementById('reviewNudge');
+  const reviewActionBtn = document.getElementById('reviewActionBtn');
+  const reviewDismissBtn = document.getElementById('reviewDismissBtn');
+
+  const REVIEW_FIRST_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
+  const REVIEW_FIRST_MIN_OPENS = 5;
+  const REVIEW_REPROMPT_DELAY_MS = 60 * 24 * 60 * 60 * 1000;
+  const REVIEW_REPROMPT_MIN_OPENS = 10;
+  const REVIEW_MAX_DISMISSALS = 2;
+
+  let sessionReviewState = null;
+  let lastConnectionHealthy = false;
+
   let currentAuditId = 0;
   let activeProbePC = null;
   let isTogglingShield = false;
   let hasRenderedOnce = false;
   let lastRenderedFingerprint = '';
   let lastAuditSignature = '';
+  let lastLeakResult = null;
   // Settings of the current render: screenshot mode and the optional time-zone row.
   let maskIps = false;
+  let pendingMaskIp = null;
   let showTimeZone = false;
 
   // Screenshot mode keeps the network part and hides the rest: 185.220.•••.•••, 2001:db8:•••.
   function shownIp(ip) {
     if (!maskIps || !ip) return ip;
     if (!ip.includes(':')) return ip.split('.').slice(0, 2).concat('•••', '•••').join('.');
-    return `${ip.split(':').filter(Boolean).slice(0, 2).join(':')}:•••`;
+    if (ip.startsWith('::')) return '::•••';
+    const parts = ip.split(':');
+    return `${parts.slice(0, 2).join(':')}:•••`;
   }
 
   const WEBRTC_STATES = {
@@ -95,13 +112,13 @@ document.addEventListener('DOMContentLoaded', () => {
       protected: { dotClass: 'sec-dot green', statusClass: 'sec-status clean', text: 'Policy Active', title: 'Chromium confirms this extension controls the selected WebRTC IP handling policy.', visible: true },
       probing: { dotClass: 'sec-dot checking', statusClass: 'sec-status', text: 'Probing...', title: 'Probing network for direct WebRTC STUN leaks...', visible: true },
       clean: { dotClass: 'sec-dot green', statusClass: 'sec-status clean', text: 'No Leak Seen', title: 'No different public ICE candidate was observed in this limited popup check.', visible: true },
-      leak: { dotClass: 'sec-dot red', statusClass: 'sec-status danger', text: 'Leak Detected', title: '⚠️ WebRTC Leak Detected! Real IP unmasked. Click Armor to enable protection.', visible: true },
+      leak: { dotClass: 'sec-dot red', statusClass: 'sec-status danger', text: 'Leak Detected', title: 'WebRTC Leak Detected! Real IP unmasked. Click Armor to enable protection.', visible: true },
       unknown: { dotClass: 'sec-dot amber', statusClass: 'sec-status warn', text: 'Unknown', title: 'WebRTC: Unable to verify network candidates.', visible: true }
     },
     shield: {
-      on: { btnOff: false, dotClass: 'sec-dot green', statusClass: 'sec-status clean', text: 'ON', btnTitle: 'WebRTC privacy policy requested. Click to toggle.', pillTitle: 'WebRTC privacy policy requested. Click to toggle.' },
+      on: { btnOff: false, dotClass: 'sec-dot green', statusClass: 'sec-status clean', text: 'ON', btnTitle: 'WebRTC Armor is active. Click to disable.', pillTitle: 'WebRTC Armor is active. Click to disable.' },
       off: { btnOff: true, dotClass: 'sec-dot amber', statusClass: 'sec-status warn', text: 'OFF', btnTitle: 'Anti-Leak Armor: OFF (Protection Disabled). Click to activate.', pillTitle: 'Anti-Leak Armor is OFF. Click to activate protection.' },
-      error: { btnOff: true, dotClass: 'sec-dot amber', statusClass: 'sec-status warn', text: 'UNAVAILABLE', btnTitle: 'Browser did not confirm this extension controls the WebRTC policy. Click to retry.', pillTitle: 'WebRTC policy unavailable or controlled elsewhere. Click to retry.' }
+      error: { btnOff: true, dotClass: 'sec-dot amber', statusClass: 'sec-status warn', text: 'UNAVAILABLE', btnTitle: 'WebRTC policy controlled by another extension or browser policy. Click to turn off Armor.', pillTitle: 'WebRTC policy controlled by another extension or browser policy. Click to turn off Armor.' }
     }
   };
 
@@ -121,11 +138,32 @@ document.addEventListener('DOMContentLoaded', () => {
       shieldStatusText.innerText = cfg.text;
       if (shieldStatusPill) shieldStatusPill.title = cfg.pillTitle;
     }
+    if (webrtcItem) {
+      const clickable = runtimeState.shield !== SHIELD_STATES.ON || runtimeState.webrtc === WEBRTC_STATES.LEAK;
+      webrtcItem.classList.toggle('is-clickable', clickable);
+      if (clickable) {
+        webrtcItem.setAttribute('role', 'button');
+        webrtcItem.setAttribute('tabindex', '0');
+      } else {
+        webrtcItem.removeAttribute('role');
+        webrtcItem.removeAttribute('tabindex');
+      }
+    }
   }
 
   function setWebRTCState(state, extra = {}) {
     runtimeState.webrtc = STATUS_CONFIG.webrtc[state] ? state : WEBRTC_STATES.UNKNOWN;
     if (!webrtcDot || !webrtcStatus || !webrtcItem) return;
+
+    const clickable = runtimeState.shield !== SHIELD_STATES.ON || runtimeState.webrtc === WEBRTC_STATES.LEAK;
+    webrtcItem.classList.toggle('is-clickable', clickable);
+    if (clickable) {
+      webrtcItem.setAttribute('role', 'button');
+      webrtcItem.setAttribute('tabindex', '0');
+    } else {
+      webrtcItem.removeAttribute('role');
+      webrtcItem.removeAttribute('tabindex');
+    }
 
     const cfg = STATUS_CONFIG.webrtc[runtimeState.webrtc];
     const divider = document.querySelector('.sec-divider');
@@ -146,7 +184,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const advice = extra.balanced
         ? 'Balanced mode lets WebRTC use your default network. Choose Strict in Settings.'
         : 'Click Armor to enable protection.';
-      webrtcItem.title = `⚠️ WebRTC Leak Detected!\nReal IP: ${leakedIps}\n(VPN Exit IP: ${exitIp})\n${advice}`;
+      webrtcItem.title = `WebRTC Leak Detected!\nReal IP: ${leakedIps}\n(VPN Exit IP: ${exitIp})\n${advice}`;
     } else {
       webrtcItem.title = cfg.title;
     }
@@ -156,7 +194,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isTogglingShield) return;
     isTogglingShield = true;
 
-    const targetOn = runtimeState.shield !== 'on';
+    const targetOn = runtimeState.shield === SHIELD_STATES.OFF;
     setShieldState(targetOn ? 'on' : 'off');
     document.documentElement.dataset.leakhaloShield = targetOn ? 'enabled' : 'disabled';
 
@@ -185,6 +223,23 @@ document.addEventListener('DOMContentLoaded', () => {
   if (shieldToggleBtn) shieldToggleBtn.addEventListener('click', toggleShield);
   if (shieldStatusPill) shieldStatusPill.addEventListener('click', toggleShield);
 
+  if (webrtcItem) {
+    const onWebRtcAction = () => {
+      if (runtimeState.shield === SHIELD_STATES.OFF) {
+        toggleShield();
+      } else if (runtimeState.shield === SHIELD_STATES.ERROR || runtimeState.webrtc === WEBRTC_STATES.LEAK) {
+        chrome.runtime.openOptionsPage?.();
+      }
+    };
+    webrtcItem.addEventListener('click', onWebRtcAction);
+    webrtcItem.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onWebRtcAction();
+      }
+    });
+  }
+
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
       if (refreshBtn.disabled) return;
@@ -201,12 +256,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  let maskToggleSeq = 0;
   if (maskToggleBtn) {
     maskToggleBtn.addEventListener('click', () => {
-      const next = !maskIps;
+      const seq = ++maskToggleSeq;
+      const next = pendingMaskIp !== null ? !pendingMaskIp : !maskIps;
+      pendingMaskIp = next;
+      maskIps = next;
       maskToggleBtn.setAttribute('aria-pressed', String(next));
+      loadData(true);
       chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', patch: { maskIp: next } }, () => {
         void chrome.runtime.lastError;
+        if (seq === maskToggleSeq) pendingMaskIp = null;
         loadData(true);
       });
     });
@@ -228,20 +289,20 @@ document.addEventListener('DOMContentLoaded', () => {
   })();
 
   function getFullCountryName(code, fallbackName) {
-    // Short names where the CLDR English label is longer than the ISO 3166-1 short name.
+    const cleanCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
     const shortNames = { PS: 'Palestine' };
-    if (code && shortNames[code.toUpperCase()]) return shortNames[code.toUpperCase()];
-    if (code && regionNames) {
+    if (cleanCode && shortNames[cleanCode]) return shortNames[cleanCode];
+    if (cleanCode && regionNames) {
       try {
-        const name = regionNames.of(code.toUpperCase());
-        if (name && name !== code.toUpperCase()) return name;
+        const name = regionNames.of(cleanCode);
+        if (name && name !== cleanCode) return name;
       } catch (e) {}
     }
     const cleanFallback = (typeof fallbackName === 'string' && !fallbackName.startsWith('Unknown') && !fallbackName.startsWith('Detected')) ? fallbackName : '';
     if (cleanFallback && cleanFallback.length > 2) {
       return cleanFallback;
     }
-    return code || cleanFallback || 'Unknown Country';
+    return cleanCode || cleanFallback || 'Unknown Country';
   }
 
   function formatIspAsn(rawIsp, rawAsn) {
@@ -284,12 +345,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (copyAnnouncer) copyAnnouncer.textContent = announcement;
         copyTimer = setTimeout(() => {
           rowElement.classList.remove('copied');
-          statusElement.innerText = 'Copy';
+          statusElement.innerText = maskIps ? 'Copy full IP' : 'Copy';
           if (copyAnnouncer) copyAnnouncer.textContent = '';
         }, 1300);
       };
       navigator.clipboard.writeText(text)
-        .then(() => settle('Copied ✓', `${label} address copied`, true))
+        .then(() => settle(maskIps ? 'Full IP copied ✓' : 'Copied ✓', `${label} address copied`, true))
         .catch(() => settle('Failed', 'Copy failed', false));
     }
 
@@ -322,10 +383,14 @@ document.addEventListener('DOMContentLoaded', () => {
     row.dataset.ip = ip || '';
     row.classList.toggle('no-ip', !ip);
     row.tabIndex = ip ? 0 : -1;
+    const statusEl = row === v4IpRow ? v4CopyStatus : v6CopyStatus;
+    if (statusEl && !row.classList.contains('copied')) {
+      statusEl.innerText = maskIps ? 'Copy full IP' : 'Copy';
+    }
     if (ip) {
       row.setAttribute('role', 'button');
       row.setAttribute('aria-label', maskIps ? `${label} address (hidden). Copy` : `${label} ${ip}. Copy`);
-      row.title = 'Click to copy IP address';
+      row.title = maskIps ? 'Click to copy full IP address' : 'Click to copy IP address';
     } else {
       row.removeAttribute('role');
       row.removeAttribute('aria-label');
@@ -429,12 +494,16 @@ document.addEventListener('DOMContentLoaded', () => {
     else link.title = MAP_TITLE;
   }
 
-  function renderTypeTag(tag, data, probeError, pending) {
+  function renderTypeTag(tag, data, probeError, pending, unverified = false) {
     if (!tag) return;
     if (probeError) {
       // The providers did not answer this time: what is shown is the last verified result.
       tag.className = 'type-tag offline';
       tag.innerText = 'Last known';
+      tag.style.display = 'inline-flex';
+    } else if (unverified) {
+      tag.className = 'type-tag vpn';
+      tag.innerText = 'Verifying';
       tag.style.display = 'inline-flex';
     } else if (!pending && data.connectionType && data.connectionType !== 'Unknown') {
       const rawType = data.connectionType.toLowerCase();
@@ -453,13 +522,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Country, place, flag, map link and ISP of one address family. `pending`: the location lookup
   // has not answered yet, so nothing is called unknown or unavailable.
-  function renderPlace(els, data, probeError) {
+  function renderPlace(els, data, probeError, unverified = false) {
     const code = realCountryCode(data.countryCode);
     // Cloudflare may already have given the country; city and network follow from the lookup.
     const pending = data.pending === true;
     const resolvedCountry = pending && !code ? 'Locating…' : getFullCountryName(code, code ? data.country : '');
     els.country.innerText = resolvedCountry;
-    renderTypeTag(els.typeTag, data, probeError, pending);
+    els.country.title = resolvedCountry;
+    renderTypeTag(els.typeTag, data, probeError, pending, unverified);
 
     const locText = pending ? 'Looking up location…'
       : placeText(data.city, data.region) || (code ? resolvedCountry : 'Location unavailable');
@@ -479,7 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const v4Els = { country: v4Country, typeTag: v4TypeTag, city: v4CityRegion, flag: v4FlagImg, watermark: v4Watermark, map: v4MapBtn, isp: v4Isp, ispRow: v4IspRow };
   const v6Els = { country: v6Country, typeTag: v6TypeTag, city: v6CityRegion, flag: v6FlagImg, watermark: v6Watermark, map: v6MapBtn, isp: v6Isp, ispRow: v6IspRow };
 
-  function renderIPv4(data, isOffline = false, probeError = false, hasResult = false) {
+  function renderIPv4(data, isOffline = false, probeError = false, hasResult = false, unverified = false) {
     // IPv6 works but there is no IPv4: a one-line note instead of a large failure card.
     const v6Only = !isOffline && !probeError && hasResult && !data?.ip;
     v4Card.style.display = v6Only ? 'none' : '';
@@ -487,17 +557,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (v6Only) return;
     if (isOffline || !data || !data.ip) {
       setCopyable(v4IpRow, '', 'IPv4');
-      v4Country.innerText = isOffline ? 'Offline' : (probeError || hasResult ? 'IPv4 unavailable' : 'Checking...');
-      v4Ip.innerText = isOffline ? 'No Connection' : (probeError || hasResult ? 'Unavailable' : 'Checking network');
+      v4Country.innerText = isOffline ? 'Offline' : (probeError ? 'IPv4 unavailable' : 'Checking...');
+      v4Ip.innerText = isOffline ? 'No Connection' : (probeError ? 'Unavailable' : 'Checking network');
       setNoFlag(v4FlagImg, v4Watermark);
-      v4CityRegion.innerText = isOffline ? 'Network connection unavailable' : (probeError ? 'Unable to verify network' : (hasResult ? 'IPv6 connection detected' : 'Waiting for network check'));
+      v4CityRegion.innerText = isOffline ? 'Network connection unavailable' : (probeError ? 'Unable to verify network' : 'Waiting for network check');
       v4CityRegion.title = v4CityRegion.innerText;
       v4IspRow.style.display = 'none';
       v4TzRow.style.display = 'none';
       setMapLink(v4MapBtn, null, null);
       if (v4TypeTag) {
         v4TypeTag.className = 'type-tag offline';
-        v4TypeTag.innerText = isOffline ? 'Disconnected' : (probeError ? 'Error' : (hasResult ? 'Unavailable' : 'Pending'));
+        v4TypeTag.innerText = isOffline ? 'Disconnected' : (probeError ? 'Error' : 'Pending');
         v4TypeTag.style.display = 'inline-flex';
       }
       return;
@@ -506,7 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
     v4Ip.innerText = shownIp(data.ip);
     v4Ip.title = shownIp(data.ip);
     setCopyable(v4IpRow, data.ip, 'IPv4');
-    renderPlace(v4Els, data, probeError);
+    renderPlace(v4Els, data, probeError, unverified);
     if (showTimeZone) renderTimeZone(data.timezone, v4TzRow, v4Tz);
     else v4TzRow.style.display = 'none';
   }
@@ -515,8 +585,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isOffline || !data || !data.ip) {
       v6ActiveCard.style.display = 'none';
       v6InactivePill.style.display = 'flex';
-      v6PillMsg.innerText = isOffline ? 'Offline' : checking ? 'Checking…' : 'Not detected on current network';
-      v6InactivePill.title = isOffline ? 'No network connection' : checking ? 'Checking for IPv6' : 'No IPv6 address detected on this network';
+      v6PillMsg.innerText = isOffline ? 'Offline' : probeError ? 'Unavailable' : checking ? 'Checking…' : 'Not detected on current network';
+      v6InactivePill.title = isOffline ? 'No network connection' : probeError ? 'Unable to verify IPv6' : checking ? 'Checking for IPv6' : 'No IPv6 address detected on this network';
       setCopyable(v6IpRow, '', 'IPv6');
       return;
     }
@@ -603,7 +673,7 @@ document.addEventListener('DOMContentLoaded', () => {
         (o0 === 100 && o1 >= 64 && o1 <= 127) || (o0 === 198 && (o1 === 18 || o1 === 19)) || (o0 === 192 && o1 === 0 && o2 === 0);
     }
     if (s.includes(':') && /^[0-9a-f:]+$/.test(s)) {
-      return s === '::' || s === '::1' || /^fe[89ab][0-9a-f]:/.test(s) || /^f[cd][0-9a-f]{2}:/.test(s) ||
+      return s === '::' || s === '::1' || s.startsWith('100::') || /^fe[89abcdef][0-9a-f]:/.test(s) || /^f[cd][0-9a-f]{2}:/.test(s) ||
         /^ff[0-9a-f]{2}:/.test(s) || s.startsWith('64:ff9b:');
     }
     return true;
@@ -648,7 +718,11 @@ document.addEventListener('DOMContentLoaded', () => {
           try { pc.close(); } catch (e) {}
         }
         const candidateList = Array.from(discoveredIPs);
-        const leaked = candidateList.filter(ip => ip !== activeV4 && ip !== activeV6);
+        const hasVerifiedExit = Boolean(activeV4 || activeV6);
+        const leaked = hasVerifiedExit ? candidateList.filter(ip => {
+          if (ip.includes(':')) return !activeV6 || ip !== activeV6;
+          return !activeV4 || ip !== activeV4;
+        }) : [];
         resolve({
           leaked: leaked.length > 0,
           verified: candidateList.length > 0,
@@ -670,24 +744,30 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!RTCPC) return done();
 
         pc = new RTCPC({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' }
+          ]
         });
         activeProbePC = pc;
 
         pc.createDataChannel('leakProbe');
         pc.createOffer().then(offer => {
           if (!finished && pc) {
-            pc.setLocalDescription(offer).catch(() => {});
+            pc.setLocalDescription(offer).catch(done);
           }
-        }).catch(() => {});
+        }).catch(done);
 
         pc.onicecandidate = (event) => {
           if (finished) return;
           if (!event || !event.candidate) return done(); // gathering finished
           const candidate = event.candidate;
           addCandidate(candidate.address || candidate.ip);
-          const tokens = (candidate.candidate || '').trim().split(/\s+/);
+          const rawCandidate = (candidate.candidate || '').trim();
+          const tokens = rawCandidate.split(/\s+/);
           if (tokens.length >= 5) addCandidate(tokens[4]);
+          const raddrMatch = rawCandidate.match(/\braddr\s+([^\s]+)/i);
+          if (raddrMatch) addCandidate(raddrMatch[1]);
         };
         pc.onicegatheringstatechange = () => {
           if (pc?.iceGatheringState === 'complete') done();
@@ -706,9 +786,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const balanced = settings?.antiLeakPolicy === 'default_public_interface_only';
     // Re-checked only when something that affects WebRTC changed (not for a finished location
     // lookup or an appearance setting), so a running check is not cut short.
-    const signature = [canonicalIp(v4Info?.ip), canonicalIp(v6Info?.ip), enableWebRtc, isArmorOn, balanced, shieldEffective === true, unverified, maskIps].join('|');
-    if (!force && signature === lastAuditSignature) return;
+    const signature = [canonicalIp(v4Info?.ip), canonicalIp(v6Info?.ip), enableWebRtc, isArmorOn, balanced, shieldEffective === true, unverified].join('|');
+    if (!force && signature === lastAuditSignature) {
+      if (runtimeState.webrtc === WEBRTC_STATES.LEAK && lastLeakResult) {
+        setWebRTCState('leak', {
+          leakedIPs: lastLeakResult.leakedIPs.map(shownIp),
+          exitIp: [v4Info?.ip, v6Info?.ip].filter(Boolean).map(shownIp).join(' / '),
+          balanced: isArmorOn && balanced
+        });
+      }
+      return;
+    }
     lastAuditSignature = signature;
+    lastLeakResult = null;
 
     const auditId = ++currentAuditId;
     if (activeProbePC) {
@@ -720,24 +810,22 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Strict mode blocks the leak itself; Balanced still lets WebRTC use the default network, so
-    // that case is checked too.
-    if (isArmorOn && (!balanced || shieldEffective !== true || unverified)) {
-      setWebRTCState(shieldEffective === true ? 'protected' : 'unknown');
-      return;
-    }
     if (unverified) {
       setWebRTCState('unknown');
       return;
     }
-    if (!isArmorOn) setWebRTCState('probing');
+    if (isArmorOn && !balanced && shieldEffective === true) {
+      setWebRTCState('protected');
+      return;
+    }
+    setWebRTCState('probing');
 
     probeWebRTCLeaks(v4Info, v6Info).then((res) => {
       if (auditId !== currentAuditId) return;
-      const exitIp = [v4Info?.ip, v6Info?.ip].filter(Boolean).join(' / ');
       if (res.leaked && res.leakedIPs?.length) {
-        setWebRTCState('leak', { leakedIPs: res.leakedIPs.map(shownIp), exitIp: [v4Info?.ip, v6Info?.ip].filter(Boolean).map(shownIp).join(' / '), balanced: isArmorOn });
-      } else if (isArmorOn) {
+        lastLeakResult = res;
+        setWebRTCState('leak', { leakedIPs: res.leakedIPs.map(shownIp), exitIp: [v4Info?.ip, v6Info?.ip].filter(Boolean).map(shownIp).join(' / '), balanced: isArmorOn && balanced });
+      } else if (isArmorOn && shieldEffective === true) {
         setWebRTCState('protected');
       } else if (res.verified) {
         setWebRTCState('clean');
@@ -769,7 +857,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function computeFingerprint(res) {
     const v4 = res.latestV4Info ? `${normalizeVal(res.latestV4Info.ip)}|${normalizeVal(res.latestV4Info.country)}|${res.latestV4Info.pending === true}|${normalizeVal(res.latestV4Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV4Info.city)}|${normalizeVal(res.latestV4Info.region)}|${normalizeVal(res.latestV4Info.isp)}|${normalizeVal(res.latestV4Info.asn)}|${normalizeVal(res.latestV4Info.connectionType)}|${normalizeVal(res.latestV4Info.lat)}|${normalizeVal(res.latestV4Info.lon)}|${normalizeVal(res.latestV4Info.timezone)}` : 'none';
     const v6 = res.latestV6Info ? `${normalizeVal(res.latestV6Info.ip)}|${normalizeVal(res.latestV6Info.country)}|${res.latestV6Info.pending === true}|${normalizeVal(res.latestV6Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV6Info.city)}|${normalizeVal(res.latestV6Info.region)}|${normalizeVal(res.latestV6Info.isp)}|${normalizeVal(res.latestV6Info.asn)}|${normalizeVal(res.latestV6Info.connectionType)}|${normalizeVal(res.latestV6Info.lat)}|${normalizeVal(res.latestV6Info.lon)}|${normalizeVal(res.latestV6Info.timezone)}` : 'none';
-    const settings = res.appSettings ? `${res.appSettings.enableAntiLeakShield !== false}_${res.appSettings.antiLeakPolicy || ''}_${res.appSettings.showMap !== false}_${res.appSettings.badgeMode || ''}_${res.appSettings.enableWebRtcScan !== false}_${res.appSettings.warnRouteDivergence === true}_${res.appSettings.maskIp === true}_${res.appSettings.showTimeZone === true}` : 'defaults';
+    const settings = res.appSettings ? `${res.appSettings.enableAntiLeakShield !== false}_${res.appSettings.antiLeakPolicy || ''}_${res.appSettings.showMap !== false}_${res.appSettings.badgeMode || ''}_${res.appSettings.enableWebRtcScan !== false}_${res.appSettings.warnRouteDivergence === true}_${pendingMaskIp !== null ? pendingMaskIp : res.appSettings?.maskIp === true}_${res.appSettings.showTimeZone === true}` : 'defaults';
     const d = res.routeDivergence;
     const route = d && Array.isArray(d.alts)
       ? `${normalizeVal(d.primaryIp)}|${normalizeVal(d.primarySource)}|${d.alts.map(alt => `${normalizeVal(alt.source)}:${normalizeVal(alt.ip)}:${normalizeVal(alt.geo?.countryCode)}:${normalizeVal(alt.geo?.country)}`).join(',')}`
@@ -796,6 +884,105 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function parseMajorMinor(version) {
+    const m = String(version || '').match(/^(\d+)\.(\d+)/);
+    return m ? [Number(m[1]), Number(m[2])] : [0, 0];
+  }
+
+  function isMinorUpgrade(currentVer, previousVer) {
+    if (!previousVer) return false;
+    const [cMaj, cMin] = parseMajorMinor(currentVer);
+    const [pMaj, pMin] = parseMajorMinor(previousVer);
+    return cMaj > pMaj || (cMaj === pMaj && cMin > pMin);
+  }
+
+  function isHealthyForReview(res) {
+    if (!res || res.isOffline === true || res.probeError === true || res.v4Unverified === true) return false;
+    const hasV4 = !!(res.latestV4Info?.ip && res.latestV4Info.pending !== true);
+    const hasV6 = !!(res.latestV6Info?.ip && res.latestV6Info.pending !== true);
+    return hasV4 || hasV6;
+  }
+
+  function shouldShowReviewNudge(state, healthy, now = Date.now()) {
+    if (!state || !healthy || state.completed === true) return false;
+    if (state.dismissCount >= REVIEW_MAX_DISMISSALS) return false;
+
+    if (state.dismissCount === 0) {
+      return (now - (state.installedAt || now) >= REVIEW_FIRST_DELAY_MS) &&
+        (state.opensInMinor >= REVIEW_FIRST_MIN_OPENS);
+    }
+
+    const currentMinor = parseMajorMinor(chrome.runtime.getManifest?.()?.version).join('.');
+    return isMinorUpgrade(currentMinor, state.dismissedMinor) &&
+      (now - (state.dismissedAt || 0) >= REVIEW_REPROMPT_DELAY_MS) &&
+      (state.opensInMinor >= REVIEW_REPROMPT_MIN_OPENS);
+  }
+
+  function renderReviewNudge() {
+    if (!reviewNudge || !reviewActionBtn) return;
+    if (!shouldShowReviewNudge(sessionReviewState, lastConnectionHealthy)) {
+      reviewNudge.style.display = 'none';
+      return;
+    }
+    const extId = chrome.runtime?.id;
+    if (!extId) {
+      reviewNudge.style.display = 'none';
+      return;
+    }
+    reviewActionBtn.href = `https://chromewebstore.google.com/detail/${extId}/reviews`;
+    reviewNudge.style.display = 'flex';
+  }
+
+  function initReviewSession() {
+    if (!reviewNudge || !reviewActionBtn || !reviewDismissBtn) return;
+    const currentMinor = parseMajorMinor(chrome.runtime.getManifest?.()?.version).join('.');
+
+    chrome.storage.local.get('reviewPrompt', (data) => {
+      if (chrome.runtime.lastError) return;
+      const now = Date.now();
+      const prev = data?.reviewPrompt && typeof data.reviewPrompt === 'object' ? data.reviewPrompt : {};
+      const changedMinor = prev.trackedMinor && prev.trackedMinor !== currentMinor;
+      const next = {
+        installedAt: prev.installedAt || now,
+        trackedMinor: currentMinor,
+        opensInMinor: (changedMinor ? 0 : (prev.opensInMinor || 0)) + 1,
+        dismissCount: prev.dismissCount || 0,
+        dismissedAt: prev.dismissedAt || 0,
+        dismissedMinor: prev.dismissedMinor || '',
+        completed: prev.completed === true
+      };
+      sessionReviewState = next;
+      if (!next.completed && next.dismissCount < REVIEW_MAX_DISMISSALS) {
+        chrome.storage.local.set({ reviewPrompt: next });
+      }
+      renderReviewNudge();
+    });
+
+    reviewActionBtn.addEventListener('click', (e) => {
+      if (!sessionReviewState) return;
+      e?.preventDefault?.();
+      const url = reviewActionBtn.href;
+      sessionReviewState = { ...sessionReviewState, completed: true };
+      reviewNudge.style.display = 'none';
+      chrome.storage.local.set({ reviewPrompt: sessionReviewState }, () => {
+        chrome.tabs?.create?.({ url });
+      });
+    });
+
+    reviewDismissBtn.addEventListener('click', () => {
+      if (!sessionReviewState) return;
+      sessionReviewState = {
+        ...sessionReviewState,
+        dismissCount: (sessionReviewState.dismissCount || 0) + 1,
+        dismissedAt: Date.now(),
+        dismissedMinor: currentMinor,
+        opensInMinor: 0
+      };
+      reviewNudge.style.display = 'none';
+      chrome.storage.local.set({ reviewPrompt: sessionReviewState });
+    });
+  }
+
   function loadData(forceRender = false, forceAudit = false) {
     if (!hasRenderedOnce) {
       loader.style.display = 'flex';
@@ -803,9 +990,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'appSettings', 'isOffline', 'probeError', 'shieldEffective', 'routeDivergence', 'v4Unverified', 'lastCheckedAt'], (res) => {
+      if (chrome.runtime.lastError || !res) res = {};
       const currentFingerprint = computeFingerprint(res);
 
       if (hasRenderedOnce && !forceRender && currentFingerprint === lastRenderedFingerprint) {
+        lastConnectionHealthy = isHealthyForReview(res);
+        renderReviewNudge();
         updateTimestamp(res.lastCheckedAt || res.latestV4Info?.updatedAt || res.latestV6Info?.updatedAt);
         return;
       }
@@ -814,11 +1004,12 @@ document.addEventListener('DOMContentLoaded', () => {
       hasRenderedOnce = true;
 
       const isOffline = res.isOffline === true;
-      maskIps = res.appSettings?.maskIp === true;
+      maskIps = pendingMaskIp !== null ? pendingMaskIp : (res.appSettings?.maskIp === true);
       showTimeZone = res.appSettings?.showTimeZone === true;
       maskToggleBtn?.setAttribute('aria-pressed', String(maskIps));
       if (maskToggleBtn) maskToggleBtn.title = maskIps ? 'Show IP addresses' : 'Hide IP addresses (for screenshots)';
       maskToggleBtn?.setAttribute('aria-label', maskIps ? 'Show IP addresses' : 'Hide IP addresses');
+      const isPaused = res.appSettings?.enableAutoRefresh === false;
       const pulseDot = document.querySelector('.pulse-dot');
       const subbarLabel = document.querySelector('.subbar-label');
       if (isOffline) {
@@ -828,35 +1019,41 @@ document.addEventListener('DOMContentLoaded', () => {
         if (pulseDot) pulseDot.className = 'pulse-dot offline';
         if (subbarLabel) subbarLabel.innerText = 'Unable to verify network';
       } else if (res.v4Unverified && res.latestV4Info) {
-        // The primary IPv4 source did not answer; the shown IPv4 is the last verified one.
         if (pulseDot) pulseDot.className = 'pulse-dot pending';
         if (subbarLabel) subbarLabel.innerText = 'Verifying IPv4…';
       } else if (!res.latestV4Info && !res.latestV6Info) {
-        if (pulseDot) pulseDot.className = 'pulse-dot';
-        if (subbarLabel) subbarLabel.innerText = 'Checking network';
+        if (pulseDot) pulseDot.className = isPaused ? 'pulse-dot pending' : 'pulse-dot';
+        if (subbarLabel) subbarLabel.innerText = isPaused ? 'Auto-check paused' : 'Checking network';
+      } else if (isPaused) {
+        if (pulseDot) pulseDot.className = 'pulse-dot pending';
+        if (subbarLabel) subbarLabel.innerText = 'Background Paused';
       } else {
         if (pulseDot) pulseDot.className = 'pulse-dot';
         if (subbarLabel) subbarLabel.innerText = 'Live Monitor';
       }
 
-      renderIPv4(res.latestV4Info || null, isOffline, res.probeError === true, !!res.latestV6Info);
+      renderIPv4(res.latestV4Info || null, isOffline, res.probeError === true, !!res.latestV6Info, res.v4Unverified === true);
       const checking = !isOffline && !res.probeError && !res.latestV4Info && !res.latestV6Info;
       renderIPv6(res.latestV6Info || null, isOffline, checking, res.probeError === true, res.latestV4Info || null);
-      if (res.appSettings) applySettings(res.appSettings);
+      applySettings(res.appSettings || {});
       checkSplitRouting(isOffline || res.probeError ? null : res.latestV4Info,
         isOffline || res.probeError ? null : res.latestV6Info, res.v4Unverified === true);
       // The split-route card is opt-in (Settings); detection still keeps the main IP stable.
       const showRouteWarning = res.appSettings?.warnRouteDivergence === true;
       renderRouteDivergence(isOffline || res.probeError || !showRouteWarning ? null : res.routeDivergence, res.latestV4Info);
 
-      const isShieldActive = res.appSettings ? res.appSettings.enableAntiLeakShield !== false : true;
-      setShieldState(isShieldActive ? (res.shieldEffective ? SHIELD_STATES.ON : SHIELD_STATES.ERROR) : SHIELD_STATES.OFF);
+      if (!isTogglingShield) {
+        const isShieldActive = res.appSettings ? res.appSettings.enableAntiLeakShield !== false : true;
+        setShieldState(isShieldActive ? (res.shieldEffective ? SHIELD_STATES.ON : SHIELD_STATES.ERROR) : SHIELD_STATES.OFF);
+      }
 
       // Without a fresh, verified public IP a WebRTC candidate cannot be judged as a leak.
       const unverified = isOffline || res.probeError === true || res.v4Unverified === true;
       runSecurityAudit(res.latestV4Info, res.latestV6Info, res.appSettings, res.shieldEffective, unverified, forceAudit);
 
       updateTimestamp(res.lastCheckedAt || res.latestV4Info?.updatedAt || res.latestV6Info?.updatedAt);
+      lastConnectionHealthy = isHealthyForReview(res);
+      renderReviewNudge();
 
       loader.style.display = 'none';
       content.style.display = 'flex';
@@ -867,10 +1064,18 @@ document.addEventListener('DOMContentLoaded', () => {
   let liveCheckInFlight = false;
   let forceAfterCurrentCheck = false;
   let lastForcedCheckAt = 0;
+  let forceCheckTimer = null;
 
   function checkNetwork(force = false) {
     if (document.hidden) return;
-    if (force && Date.now() - lastForcedCheckAt < 1_500) return;
+    if (force) {
+      const elapsed = Date.now() - lastForcedCheckAt;
+      if (elapsed < 1_500) {
+        clearTimeout(forceCheckTimer);
+        forceCheckTimer = setTimeout(() => checkNetwork(true), 1_500 - elapsed);
+        return;
+      }
+    }
     if (liveCheckInFlight) {
       if (force) forceAfterCurrentCheck = true;
       return;
@@ -888,6 +1093,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  initReviewSession();
   loadData(true);
   checkNetwork();
   const liveCheckTimer = setInterval(() => checkNetwork(), LIVE_CHECK_INTERVAL_MS);
@@ -907,6 +1113,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   window.addEventListener('pagehide', () => {
     clearInterval(liveCheckTimer);
+    clearTimeout(forceCheckTimer);
     currentAuditId++;
     if (activeProbePC) activeProbePC.close();
   });

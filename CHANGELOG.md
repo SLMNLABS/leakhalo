@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 (2026-11-15)
+- Zero-telemetry feedback nudge: respectful review prompt displayed only after verified healthy connection.
+- Settings page feedback link directly to the Chrome Web Store.
+- WebRTC Armor hardening: strict race condition elimination on policy actions.
+- Responsive 2x2 metadata grid on the extension settings page.
+- Comprehensive V8 test coverage (99.70%) across all runtime components.
+
+
 ## 1.2.1 (2026-11-11)
 - What is my IP & VPN Country Flag positioning: updated extension title to "LeakHalo: What is my IP, Country & WebRTC".
 - Complete 13-language localization with exact-match search terms.

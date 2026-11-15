@@ -13,271 +13,378 @@
   <div class="app-shell">
     <header class="topbar">
       <div class="identity">
-        <img src="../assets/brand/icon-only.png" width="38" height="38" alt="">
-        <div><strong>LeakHalo</strong><span>Settings</span></div>
+        <img src="../assets/brand/icon-only.png" width="32" height="32" alt="LeakHalo">
+        <div class="brand-titles">
+          <strong>LeakHalo</strong>
+          <span class="brand-subtitle">Settings</span>
+        </div>
       </div>
-      <span id="saveToast" class="save-status" role="status" aria-live="polite" data-state="loading">Saved in this browser</span>
+
+      <div class="search-bar-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" class="search-icon" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="settingsSearch" placeholder="Search settings (Ctrl+K)..." aria-label="Search settings" autocomplete="off" spellcheck="false">
+        <button type="button" id="searchClearBtn" class="search-clear-btn" aria-label="Clear search" style="display:none">✕</button>
+        <kbd class="search-kbd" id="searchKbd">Ctrl K</kbd>
+      </div>
+
+      <div class="topbar-right">
+        <span id="saveToast" class="save-status" role="status" aria-live="polite" data-state="ready">Saved</span>
+      </div>
     </header>
 
     <div class="layout">
       <aside class="sidebar">
-        <p class="nav-label">PREFERENCES</p>
+        <p class="nav-label">SETTINGS</p>
         <nav class="nav-menu" aria-label="Settings navigation">
           <span class="nav-indicator" aria-hidden="true"></span>
-          <a href="#general" class="nav-item active" aria-current="location" draggable="false"><span class="nav-number" aria-hidden="true">01</span> Privacy</a>
-          <a href="#notifications" class="nav-item" draggable="false"><span class="nav-number" aria-hidden="true">02</span> Monitoring</a>
-          <a href="#badge" class="nav-item" draggable="false"><span class="nav-number" aria-hidden="true">03</span> Appearance</a>
-          <a href="#about" class="nav-item" draggable="false"><span class="nav-number" aria-hidden="true">04</span> About</a>
+          <a href="#general" class="nav-item active" aria-current="location" draggable="false"><span class="nav-number" aria-hidden="true">01</span> Privacy &amp; WebRTC</a>
+          <a href="#notifications" class="nav-item" draggable="false"><span class="nav-number" aria-hidden="true">02</span> Notifications &amp; Alerts</a>
+          <a href="#badge" class="nav-item" draggable="false"><span class="nav-number" aria-hidden="true">03</span> Appearance &amp; Toolbar</a>
+          <a href="#about" class="nav-item" draggable="false"><span class="nav-number" aria-hidden="true">04</span> Data &amp; About</a>
         </nav>
-        <div class="sidebar-note">
-          <span class="note-dot" aria-hidden="true"></span>
-          <p>Your preferences are saved in this browser. IP checks contact the providers listed in the privacy policy.</p>
+        <div class="sidebar-footer">
+          <span>Zero telemetry · Local storage only</span>
         </div>
       </aside>
 
       <main class="main-content" id="mainContent">
         <div class="page-header">
-          <p class="eyebrow">CONTROL CENTER</p>
-          <h1>Your connection, your settings.</h1>
-          <p>Choose how LeakHalo checks your IP, protects WebRTC, and shows changes.</p>
+          <h1>Settings</h1>
+          <p class="page-lede">Manage WebRTC leak protection, connection change alerts, and toolbar display.</p>
         </div>
 
-        <section id="general" class="section-card" aria-labelledby="privacyTitle">
-          <div class="section-heading">
-            <span class="section-index" aria-hidden="true">01</span>
-            <div>
-              <h2 id="privacyTitle">Privacy</h2>
-              <p>Browser protections and the optional popup diagnostic.</p>
-            </div>
+        <!-- ================================================================
+             SECTION 01: Privacy & WebRTC Leak Protection
+             ================================================================ -->
+        <section class="section-card" id="general" aria-labelledby="generalHeading">
+          <div class="section-header">
+            <h2 class="section-title" id="generalHeading"><span class="section-number" aria-hidden="true">01</span> Privacy &amp; WebRTC</h2>
+            <p class="section-description">Chromium native security policies and local IP leak prevention.</p>
           </div>
 
-          <label class="setting-row featured-row">
+          <label class="setting-row highlight-row" data-search="webrtc anti-leak shield protection ip leak vpn">
             <span class="setting-copy">
-              <span class="setting-title" id="setAntiLeakShieldTitle">WebRTC protection</span>
-              <span class="setting-description" id="setAntiLeakShieldDesc">Apply a browser policy that restricts which IP addresses WebRTC can expose. Other extensions or browser policy may override it.</span>
+              <span class="setting-title">WebRTC Armor (WebRTC leak protection)</span>
+              <span class="setting-description">Apply Chromium's native policy to prevent websites and STUN requests from discovering your real IP past a VPN.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setAntiLeakShield" role="switch" aria-labelledby="setAntiLeakShieldTitle" aria-describedby="setAntiLeakShieldDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setAntiLeakShield" class="switch" role="switch">
           </label>
 
-          <div id="policyRow" class="setting-row select-row">
-            <label class="setting-copy" for="setAntiLeakPolicy">
-              <span class="setting-title">Protection level</span>
-              <span class="setting-description">The stricter mode can affect some calls and peer-to-peer apps.</span>
-            </label>
-            <select id="setAntiLeakPolicy">
-              <option value="disable_non_proxied_udp">Strict · block non-proxied UDP</option>
-              <option value="default_public_interface_only">Balanced · public interface only</option>
+          <div class="setting-subgroup" id="policyRow" data-search="protection level webrtc policy strict udp balanced public interface">
+            <span class="subgroup-label" id="policyLabel">Protection level</span>
+            <span class="subgroup-description">Choose how strictly Chromium restricts WebRTC candidate gathering:</span>
+
+            <div class="policy-cards" role="radiogroup" aria-labelledby="policyLabel">
+              <div class="policy-card active" id="policyCardStrict" tabindex="0" role="radio" aria-checked="true">
+                <div class="policy-card-header">
+                  <span class="policy-card-title">Block Non-Proxied UDP</span>
+                  <span class="policy-badge strict">Strict</span>
+                </div>
+                <p class="policy-card-desc">Disables non-proxied UDP traffic. Prevents all WebRTC STUN requests from exposing your real IP.</p>
+                <div class="policy-card-radio" aria-hidden="true"></div>
+              </div>
+
+              <div class="policy-card" id="policyCardBalanced" tabindex="0" role="radio" aria-checked="false">
+                <div class="policy-card-header">
+                  <span class="policy-card-title">Public Interface Only</span>
+                  <span class="policy-badge balanced">Balanced</span>
+                </div>
+                <p class="policy-card-desc">Permits WebRTC over your default route while blocking private LAN interfaces. Works with Google Meet and Discord.</p>
+                <div class="policy-card-radio" aria-hidden="true"></div>
+              </div>
+            </div>
+
+            <!-- Native select kept synchronized for screen readers and test suite -->
+            <select id="setAntiLeakPolicy" class="policy-select-native" aria-label="Anti-leak WebRTC policy">
+              <option value="disable_non_proxied_udp">Block Non-Proxied UDP (Strict)</option>
+              <option value="default_public_interface_only">Public Interface Only (Balanced)</option>
             </select>
           </div>
 
-          <label class="setting-row">
+          <label class="setting-row" data-search="disable network prediction dns prefetch speculative lookups">
             <span class="setting-copy">
-              <span class="setting-title" id="setDnsPrefetchBlockTitle">Disable network prediction</span>
-              <span class="setting-description" id="setDnsPrefetchBlockDesc">Turn off Chromium's prediction setting. Websites can still make their own DNS requests.</span>
+              <span class="setting-title">Disable network prediction</span>
+              <span class="setting-description">Stop Chrome from pre-resolving domain names before you click links.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setDnsPrefetchBlock" role="switch" aria-labelledby="setDnsPrefetchBlockTitle" aria-describedby="setDnsPrefetchBlockDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setDnsPrefetchBlock" class="switch" role="switch" aria-label="Disable network prediction">
           </label>
 
-          <label class="setting-row">
+          <label class="setting-row" data-search="webrtc popup diagnostic scanner ice candidate test">
             <span class="setting-copy">
-              <span class="setting-title" id="setWebRtcScanTitle">WebRTC popup diagnostic</span>
-              <span class="setting-description" id="setWebRtcScanDesc">When the shield is off, check ICE candidates in the popup. This limited check may contact Google's STUN server.</span>
+              <span class="setting-title">WebRTC diagnostic test in popup</span>
+              <span class="setting-description">When protection is off or set to Balanced, inspect ICE candidates live in the popup to test for IP leaks.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setWebRtcScan" role="switch" aria-labelledby="setWebRtcScanTitle" aria-describedby="setWebRtcScanDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setWebRtcScan" class="switch" role="switch">
           </label>
 
-          <div class="setting-row leak-tests">
+          <div class="setting-row" data-search="external privacy audit leak test dns fingerprint eff">
             <span class="setting-copy">
-              <span class="setting-title">More leak tests</span>
-              <span class="setting-description">Independent checks for leaks LeakHalo does not cover. They open in a new tab; LeakHalo sends them nothing.</span>
+              <span class="setting-title">External leak tests</span>
+              <span class="setting-description">Independent verification tools. They open in a new tab; LeakHalo sends no data to them.</span>
             </span>
-            <span class="leak-links">
-              <a href="https://www.dnsleaktest.com/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">DNS leak test</a>
-              <a href="https://coveryourtracks.eff.org/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Browser fingerprint</a>
-            </span>
-          </div>
-
-          <div class="setting-row clear-data-row">
-            <span class="setting-copy">
-              <span class="setting-title" id="clearDataTitle">Stored IP data</span>
-              <span class="setting-description" id="clearDataDesc">Remove the IP addresses, locations and route details LeakHalo keeps in this browser. Your settings stay. With background checks on, a fresh check follows at once.</span>
-            </span>
-            <button type="button" id="clearIpData" class="secondary-button" aria-describedby="clearDataDesc">Clear data</button>
+            <div class="btn-group">
+              <a href="https://www.dnsleaktest.com/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+                DNS leak test
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </a>
+              <a href="https://coveryourtracks.eff.org/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+                Browser fingerprint (EFF)
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </a>
+            </div>
           </div>
         </section>
 
-        <section id="notifications" class="section-card" aria-labelledby="monitoringTitle">
-          <div class="section-heading">
-            <span class="section-index" aria-hidden="true">02</span>
-            <div>
-              <h2 id="monitoringTitle">Monitoring</h2>
-              <p>Choose when LeakHalo checks and alerts you.</p>
-            </div>
+        <!-- ================================================================
+             SECTION 02: Notifications & Monitoring
+             ================================================================ -->
+        <section class="section-card" id="notifications" aria-labelledby="notificationsHeading">
+          <div class="section-header">
+            <h2 class="section-title" id="notificationsHeading"><span class="section-number" aria-hidden="true">02</span> Notifications &amp; Alerts</h2>
+            <p class="section-description">Desktop push alerts on network changes and background connection polling.</p>
           </div>
 
-          <label class="setting-row">
+          <!-- TOP PROMINENT ITEM: Master Desktop Notifications Switch -->
+          <div class="notification-callout">
+            <label class="setting-row callout-row" for="setNotifications" data-search="desktop notifications push alerts ip change country switch">
+              <span class="setting-copy">
+                <span class="setting-title prominent">Desktop notifications</span>
+                <span class="setting-description">Show a desktop alert whenever your public IP address or country changes (e.g. VPN disconnects or switches).</span>
+              </span>
+              <input type="checkbox" id="setNotifications" class="switch" role="switch">
+            </label>
+
+            <!-- Nested Sub-option: Include IPv6 address changes -->
+            <label class="setting-row nested-row" id="notifyIpv6Row" data-search="include ipv6 address changes notifications temporary privacy extensions">
+              <span class="setting-copy">
+                <span class="setting-title">Include IPv6 changes</span>
+                <span class="setting-description">Notify on IPv6 rotations. Disable if your ISP frequently rotates temporary IPv6 addresses.</span>
+              </span>
+              <input type="checkbox" id="setNotifyIPv6" class="switch" role="switch">
+            </label>
+          </div>
+
+          <!-- Background connection watchers (Parent on top, dependent watcher below) -->
+          <label class="setting-row" data-search="background ip checks periodic polling 30 seconds">
             <span class="setting-copy">
-              <span class="setting-title" id="setAutoRefreshTitle">Background IP checks</span>
-              <span class="setting-description" id="setAutoRefreshDesc">Check about every 30 seconds while the browser runs. The browser may delay background checks. The open popup checks every few seconds separately.</span>
+              <span class="setting-title">Background IP checks</span>
+              <span class="setting-description">Poll public IP endpoints every 30 seconds while the browser is open.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setAutoRefresh" role="switch" aria-labelledby="setAutoRefreshTitle" aria-describedby="setAutoRefreshDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setAutoRefresh" class="switch" role="switch">
           </label>
 
-          <label class="setting-row" id="fastDetectionRow">
+          <label class="setting-row" id="fastDetectionRow" data-search="instant change detection 3s watcher vpn disconnects cloudflare trace">
             <span class="setting-copy">
-              <span class="setting-title" id="setFastDetectionTitle">Instant change detection</span>
-              <span class="setting-description" id="setFastDetectionDesc">Checks your IP with Cloudflare every few seconds while you use the computer, so a changed IP or country shows within seconds even when the popup is closed. Pauses when you are away. Turn off to rely on the 30-second checks only.</span>
+              <span class="setting-title">Instant change detection (3s Watcher)</span>
+              <span class="setting-description">Checks Cloudflare trace while active to detect VPN drops in ~3 seconds. Pauses when idle.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setFastDetection" role="switch" aria-labelledby="setFastDetectionTitle" aria-describedby="setFastDetectionDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setFastDetection" class="switch" role="switch">
           </label>
 
-          <label class="setting-row">
+          <label class="setting-row" data-search="warn when sites see different ips split routing multi-endpoint conflict">
             <span class="setting-copy">
-              <span class="setting-title" id="setNotificationsTitle">IP change notifications</span>
-              <span class="setting-description" id="setNotificationsDesc">Show a desktop alert when a previously known public IP changes. Browser notification settings also apply.</span>
+              <span class="setting-title">Warn when sites see different IPs</span>
+              <span class="setting-description">Alert if edge and independent providers report conflicting public IPs (e.g. split-tunnel VPN or proxy routing).</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setNotifications" role="switch" aria-labelledby="setNotificationsTitle" aria-describedby="setNotificationsDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
-          </label>
-
-          <label class="setting-row" id="notifyIpv6Row">
-            <span class="setting-copy">
-              <span class="setting-title" id="setNotifyIPv6Title">Include IPv6 changes</span>
-              <span class="setting-description" id="setNotifyIPv6Desc">Some networks rotate temporary IPv6 addresses often. Turn off to be alerted about IPv4 changes only.</span>
-            </span>
-            <span class="switch">
-              <input type="checkbox" id="setNotifyIPv6" role="switch" aria-labelledby="setNotifyIPv6Title" aria-describedby="setNotifyIPv6Desc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
-          </label>
-
-          <label class="setting-row">
-            <span class="setting-copy">
-              <span class="setting-title" id="setRouteWarningTitle">Warn when sites see different IPs</span>
-              <span class="setting-description" id="setRouteWarningDesc">Off by default: the popup always shows the IP and country most sites see. Turn on to also show a warning when some sites reach you through another public IP, for example through a split-tunnel VPN, a proxy rule or your provider's routing.</span>
-            </span>
-            <span class="switch">
-              <input type="checkbox" id="setRouteWarning" role="switch" aria-labelledby="setRouteWarningTitle" aria-describedby="setRouteWarningDesc">
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setRouteWarning" class="switch" role="switch" aria-label="Warn when sites see different IPs">
           </label>
         </section>
 
-        <section id="badge" class="section-card" aria-labelledby="appearanceTitle">
-          <div class="section-heading">
-            <span class="section-index" aria-hidden="true">03</span>
-            <div>
-              <h2 id="appearanceTitle">Appearance</h2>
-              <p>Keep the toolbar and popup as simple as you like.</p>
-            </div>
+        <!-- ================================================================
+             SECTION 03: Appearance & Toolbar
+             ================================================================ -->
+        <section class="section-card" id="badge" aria-labelledby="badgeHeading">
+          <div class="section-header">
+            <h2 class="section-title" id="badgeHeading"><span class="section-number" aria-hidden="true">03</span> Appearance &amp; Toolbar</h2>
+            <p class="section-description">Toolbar badge display mode, dashboard theme, and popup map links. Turns grey when offline and adds ERR on failure.</p>
           </div>
 
-          <fieldset class="badge-fieldset">
-            <legend>Toolbar icon</legend>
+          <fieldset class="badge-fieldset" data-search="toolbar icon display mode badge flag country code minimalist logo">
+            <legend class="badge-legend">Toolbar icon display mode</legend>
+
             <div class="option-group">
-              <label class="radio-card">
-                <span class="radio-card-heading"><input type="radio" name="badgeMode" value="flag" checked><span class="radio-content"><strong>Country flag</strong><small>Show the detected country, or split flags for different IPv4 and IPv6 routes.</small></span></span>
-                <span class="toolbar-preview" aria-hidden="true"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-address"></span><span class="preview-extension"><img src="../assets/flags/flag-us.png" alt=""></span></span>
-                <span class="preview-note" aria-hidden="true">Example · US <span class="split-example"><span class="split-flag"><img src="../assets/flags/flag-us.png" alt=""><img src="../assets/flags/flag-de.png" alt=""></span> US / DE split</span></span>
+              <label class="option-card">
+                <input type="radio" name="badgeMode" value="flag" checked>
+                <span class="option-card-body">
+                  <span class="option-card-title">Country Flag</span>
+                  <span class="option-card-desc">Shows the active VPN country flag. Splits into dual flags if IPv4 and IPv6 countries differ.</span>
+                  <span class="preview-mockup" aria-hidden="true">
+                    <span class="mockup-chrome">
+                      <span class="mockup-dots"></span>
+                      <span class="mockup-pill">
+                        <img src="../assets/flags/flag-us.png" width="16" height="16" alt="">
+                      </span>
+                    </span>
+                  </span>
+                </span>
               </label>
-              <label class="radio-card">
-                <span class="radio-card-heading"><input type="radio" name="badgeMode" value="text"><span class="radio-content"><strong>Flag and code</strong><small>Add a two-letter country badge to the flag.</small></span></span>
-                <span class="toolbar-preview" aria-hidden="true"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-address"></span><span class="preview-extension"><img src="../assets/flags/flag-us.png" alt=""><span class="preview-badge">US</span></span></span>
-                <span class="preview-note" aria-hidden="true">Example · US country badge</span>
+
+              <label class="option-card">
+                <input type="radio" name="badgeMode" value="text">
+                <span class="option-card-body">
+                  <span class="option-card-title">Flag &amp; ISO Code</span>
+                  <span class="option-card-desc">National flag with a two-letter country abbreviation badge overlay.</span>
+                  <span class="preview-mockup" aria-hidden="true">
+                    <span class="mockup-chrome">
+                      <span class="mockup-dots"></span>
+                      <span class="mockup-pill">
+                        <img src="../assets/flags/flag-us.png" width="16" height="16" alt="">
+                        <span class="mockup-badge">US</span>
+                      </span>
+                    </span>
+                  </span>
+                </span>
               </label>
-              <label class="radio-card">
-                <span class="radio-card-heading"><input type="radio" name="badgeMode" value="off"><span class="radio-content"><strong>LeakHalo icon</strong><small>Use the product icon. Offline turns it grey; an error adds a badge.</small></span></span>
-                <span class="toolbar-preview" aria-hidden="true"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-address"></span><span class="preview-extension"><img src="../assets/icons/icon48.png" alt=""></span></span>
-                <span class="preview-note preview-note-status" aria-hidden="true"><span class="status-example connected">Connected</span><span class="status-example offline">Grey · Offline</span><span class="status-example"><span class="preview-status error">ERR</span> Error</span></span>
+
+              <label class="option-card">
+                <input type="radio" name="badgeMode" value="off">
+                <span class="option-card-body">
+                  <span class="option-card-title">Minimalist Logo</span>
+                  <span class="option-card-desc">Shows the official LeakHalo shield icon.</span>
+                  <span class="preview-mockup" aria-hidden="true">
+                    <span class="mockup-chrome">
+                      <span class="mockup-dots"></span>
+                      <span class="mockup-pill">
+                        <img src="../assets/icons/icon16.png" width="16" height="16" alt="">
+                      </span>
+                    </span>
+                  </span>
+                </span>
               </label>
             </div>
           </fieldset>
 
-          <div class="setting-row select-row theme-row">
+          <div class="setting-row select-row theme-row" data-search="theme settings page light dark system appearance">
             <span class="setting-copy">
               <span class="setting-title" id="themeLabel">Settings page theme</span>
-              <span class="setting-description">Applies to this page only. The popup always uses its dark design.</span>
+              <span class="setting-description">Choose appearance mode for this settings page. The extension popup uses dark theme.</span>
             </span>
             <span class="theme-switch" role="radiogroup" aria-labelledby="themeLabel">
-              <label><input type="radio" name="optionsTheme" value="light" checked><span>Light</span></label>
-              <label><input type="radio" name="optionsTheme" value="dark"><span>Dark</span></label>
-              <label><input type="radio" name="optionsTheme" value="system"><span>System</span></label>
+              <label>
+                <input type="radio" name="optionsTheme" value="light" checked>
+                <span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                  Light
+                </span>
+              </label>
+              <label>
+                <input type="radio" name="optionsTheme" value="dark">
+                <span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                  Dark
+                </span>
+              </label>
+              <label>
+                <input type="radio" name="optionsTheme" value="system">
+                <span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                  System
+                </span>
+              </label>
             </span>
           </div>
 
-          <label class="setting-row map-row">
+          <label class="setting-row" data-search="map links in popup openstreetmap location coordinates">
             <span class="setting-copy">
-              <span class="setting-title" id="setShowMapTitle">Map links in popup</span>
-              <span class="setting-description" id="setShowMapDesc">Show links to approximate IP locations on OpenStreetMap.</span>
-              <span class="popup-preview" aria-hidden="true">
-                <span class="popup-preview-label">POPUP EXAMPLE</span>
-                <span class="popup-preview-country"><img src="../assets/flags-rect/flag-us.png" width="22" height="16" alt=""> United States <small>IPv4</small></span>
-                <span class="popup-preview-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>San Francisco, California</span>
-                <span class="popup-preview-hidden">Location link hidden</span>
-              </span>
+              <span class="setting-title">Map links in popup</span>
+              <span class="setting-description">Link city and region names to OpenStreetMap to view approximate IP location.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setShowMap" role="switch" aria-labelledby="setShowMapTitle" aria-describedby="setShowMapDesc" checked>
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setShowMap" class="switch" role="switch" aria-label="Map links in popup">
           </label>
 
-          <label class="setting-row">
+          <label class="setting-row" data-search="time zone consistency clock proxy discrepancy check">
             <span class="setting-copy">
-              <span class="setting-title" id="setShowTimeZoneTitle">Time zone check in popup</span>
-              <span class="setting-description" id="setShowTimeZoneDesc">Show the time zone of your IP and whether your browser clock matches it. Websites can compare the two, which can reveal a VPN or proxy.</span>
+              <span class="setting-title">Time zone consistency check</span>
+              <span class="setting-description">Highlight time zone discrepancies between your system clock and the public IP geolocation.</span>
             </span>
-            <span class="switch">
-              <input type="checkbox" id="setShowTimeZone" role="switch" aria-labelledby="setShowTimeZoneTitle" aria-describedby="setShowTimeZoneDesc">
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
+            <input type="checkbox" id="setShowTimeZone" class="switch" role="switch" aria-label="Time zone consistency check">
           </label>
         </section>
 
-        <section id="about" class="section-card about-card" aria-labelledby="aboutTitle">
-          <div class="section-heading">
-            <span class="section-index" aria-hidden="true">04</span>
-            <div>
-              <h2 id="aboutTitle">About LeakHalo</h2>
-              <p>Clear information about this extension.</p>
+        <!-- ================================================================
+             SECTION 04: Data Management & About LeakHalo
+             ================================================================ -->
+        <section class="section-card" id="about" aria-labelledby="aboutHeading">
+          <div class="section-header">
+            <h2 class="section-title" id="aboutHeading"><span class="section-number" aria-hidden="true">04</span> Data &amp; About</h2>
+            <p class="section-description">Manage stored cache, export settings, and review extension details.</p>
+          </div>
+
+          <div class="setting-row" data-search="stored network route cache clear purge ip">
+            <span class="setting-copy">
+              <span class="setting-title">Stored route cache</span>
+              <span class="setting-description">Clear cached IP addresses, geolocation data, and ASN records stored in this browser.</span>
+            </span>
+            <button type="button" id="clearDataBtn" class="btn btn-secondary">Clear cache</button>
+          </div>
+
+          <div class="setting-row" data-search="backup export settings json configuration restore defaults">
+            <span class="setting-copy">
+              <span class="setting-title">Backup &amp; restore</span>
+              <span class="setting-description">Export settings to a JSON file or restore standard recommended defaults.</span>
+            </span>
+            <div class="btn-group">
+              <button type="button" id="exportConfigBtn" class="btn btn-secondary">Export JSON</button>
+              <button type="button" id="importConfigBtn" class="btn btn-secondary">Import JSON</button>
+              <input type="file" id="importConfigInput" accept=".json,application/json" hidden>
+              <button type="button" id="resetDefaultsBtn" class="btn btn-danger-outline">Reset defaults</button>
             </div>
           </div>
-          <img class="about-wordmark" data-light="../assets/brand/wordmark.png" data-dark="../assets/brand/wordmark-dark.png" width="148" height="148" alt="LeakHalo logo">
-          <p class="about-tagline">Privacy &amp; leak protection for your browser</p>
-          <div class="about-grid">
-            <div class="about-info">
-              <span class="about-icon"><img src="../assets/brand/salman-labs.png" width="24" height="24" alt=""></span>
-              <span class="about-copy"><span class="about-label">Publisher</span><strong>SLMN LABS</strong></span>
+
+          <div class="about-card" data-search="about version publisher privacy license review rate store">
+            <div class="about-brand-row">
+              <img src="../assets/icons/icon48.png" width="36" height="36" alt="" class="about-icon">
+              <div class="about-brand-text">
+                <div class="about-title-wrap">
+                  <strong class="about-name">LeakHalo</strong>
+                  <span class="version-tag">v<span id="appVersion">—</span></span>
+                </div>
+                <p class="about-tagline">Client-side network inspection and WebRTC leak protection for Google Chrome.</p>
+              </div>
             </div>
-            <div class="about-info">
-              <span class="about-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg></span>
-              <span class="about-copy"><span class="about-label">Version</span><strong id="appVersion">—</strong></span>
+
+            <div class="about-meta-list">
+              <div class="about-meta-item">
+                <span class="meta-label">Publisher</span>
+                <a href="https://t.me/SLMN_LABS" target="_blank" rel="noopener noreferrer" class="meta-value link-accent">
+                  SLMN LABS
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </a>
+              </div>
+              <div class="about-meta-item">
+                <span class="meta-label">Feedback</span>
+                <a id="btnRateExtension" href="#" target="_blank" rel="noopener noreferrer" class="meta-value link-accent">
+                  Rate on Web Store
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </a>
+              </div>
+              <div class="about-meta-item">
+                <span class="meta-label">Privacy</span>
+                <a href="../privacy.html" target="_blank" rel="noopener noreferrer" class="meta-value link-accent">
+                  Zero Telemetry Pledge
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </a>
+              </div>
+              <div class="about-meta-item">
+                <span class="meta-label">License</span>
+                <a href="../licenses.html" target="_blank" rel="noopener noreferrer" class="meta-value link-accent">
+                  Open-source licenses
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </a>
+              </div>
             </div>
-            <a class="about-info about-link" href="../privacy.html" target="_blank" rel="noopener noreferrer" aria-label="Read the privacy policy (opens in a new tab)">
-              <span class="about-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
-              <span class="about-copy"><span class="about-label">Privacy</span><strong>Read the privacy policy</strong></span>
-              <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-            </a>
+
+            <div class="about-footnote">
+              <span>Flags from square-flags and flag-icons (MIT) · Icons from Lucide (ISC)</span>
+            </div>
           </div>
-          <p class="about-credits">Flags from <span lang="en">square-flags</span> and <span lang="en">flag-icons</span> (MIT), icons from Lucide (ISC). <a href="https://github.com/SLMN-LABS/leakhalo/blob/main/ASSET_ATTRIBUTION.md" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Open-source licenses</a></p>
         </section>
+
+        <div id="searchEmptyState" class="search-empty-state" style="display: none;" role="status">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="m9 9 4 4"/><path d="m13 9-4 4"/></svg>
+          <p class="empty-title">No matching settings</p>
+          <p class="empty-desc">Check your search query or press Escape to clear.</p>
+        </div>
       </main>
     </div>
   </div>

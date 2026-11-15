@@ -1,6 +1,7 @@
 
 let activeProbePromise = null;
 let queuedForceProbePromise = null;
+let queuedForceIsManual = false;
 const PROBE_INTERVAL_MS = 30_000;
 const POPUP_PROBE_INTERVAL_MS = 3_000;
 let POPUP_PROBE_WITH_WATCHER_MS = 10_000;
@@ -15,7 +16,7 @@ let watcherRunning = false;
 let watcherTimer = null;
 let watcherGeneration = 0; // a loop from before a stop/start never schedules itself again
 let watcherTraceIndex = 0;
-let traceConsecutiveFailures = 0;
+let lastUnverifiedWatcherAt = 0;
 let traceSucceededOnce = false;
 let traceFailureTriggered = false;
 let lastTraceKey = '';
@@ -29,6 +30,7 @@ let PROBE_WATCHDOG_MS = 30_000;
 let TOOLBAR_WAIT_MS = 5_000;
 let NOTIFY_GEO_WAIT_MS = 2_500;
 let probeGeneration = 0;
+let clearGeneration = 0;
 // While a check reports "offline", retry soon so the return of the connection shows within seconds
 // (the alarm alone would take up to 30 s), then every 15 s for as long as the worker runs.
 // Requests fail locally while offline, so this is cheap.
@@ -167,17 +169,26 @@ const BADGE_TEXT = { '#f59e0b': '#192b35', '#0284c7': '#ffffff', '#64748b': '#ff
 // Works out icon, badge and title for the current state without rendering anything: the icon is
 // described ({ kind, codes }) so an unchanged state can be recognised before any drawing.
 async function planToolbar(v4Info, v6Info, isOffline, probeError) {
-  const res = await chrome.storage.local.get(['appSettings', 'routeDivergence']);
+  const res = await chrome.storage.local.get(['appSettings', 'routeDivergence', 'v4Unverified']);
   const badgeMode = (res.appSettings && res.appSettings.badgeMode) ? res.appSettings.badgeMode : 'flag';
 
   // Failure states take precedence over cached locations: a stale flag must not look verified.
-  if (isOffline || probeError || (!v4Info?.ip && !v6Info?.ip)) {
+  if (isOffline || probeError) {
     return {
       icon: { kind: 'grey' },
       // Offline is the grey icon alone; only a provider error adds a badge.
       badgeText: probeError ? 'ERR' : '',
       badgeColor: probeError ? '#f59e0b' : '#64748b',
       title: probeError ? 'LeakHalo: Unable to verify network' : 'LeakHalo: Disconnected / No Internet Connection'
+    };
+  }
+  if (!v4Info?.ip && !v6Info?.ip) {
+    const isPaused = res.appSettings?.enableAutoRefresh === false;
+    return {
+      icon: { kind: 'default' },
+      badgeText: '',
+      badgeColor: null,
+      title: isPaused ? 'LeakHalo: Auto-check paused (click to check)' : (chrome.i18n?.getMessage?.('defaultTitle') || 'LeakHalo: Checking your connection…')
     };
   }
 
@@ -191,12 +202,13 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
     ? divergence.alts.map(alt => normalizeCountryCode(alt.geo?.countryCode)).find(code => code && code !== v4Code) || ''
     : '';
   const primaryCode = v4Code || v6Code;
-  const primaryName = primaryCode ? (v4Code ? v4Info.country : v6Info.country) : '';
-  const isV4V6Split = !!(v4Code && v6Code && v4Code !== v6Code);
+  const primaryName = primaryCode ? getFullCountryName(primaryCode, v4Code ? v4Info.country : v6Info.country) : '';
+  const isV4V6Split = !v4Info?.pending && !v6Info?.pending && !res.v4Unverified &&
+    !!(v4Code && v6Code && v4Code !== v6Code);
 
   const lines = [];
   if (divergence) {
-    lines.push('⚠️ Sites see different IPs',
+    lines.push('Sites see different IPs',
       `${divergence.primarySource}: ${divergence.primaryIp}${v4Code ? ` (${v4Code})` : ''}`,
       ...divergence.alts.map(alt => {
         const code = normalizeCountryCode(alt.geo?.countryCode);
@@ -204,7 +216,7 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
       }));
   }
   if (isV4V6Split) {
-    lines.push('⚠️ Split Route Detected!', `IPv4: ${v4Info.country} (${v4Code}) | IPv6: ${v6Info.country} (${v6Code})`);
+    lines.push('Split Route Detected', `IPv4: ${getFullCountryName(v4Code, v4Info?.country)} (${v4Code}) | IPv6: ${getFullCountryName(v6Code, v6Info?.country)} (${v6Code})`);
   }
   const locating = v4Info?.pending === true || (!v4Info?.ip && v6Info?.pending === true);
   lines.push(primaryCode ? `Location: ${primaryName} (${primaryCode})`
@@ -213,7 +225,7 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
   const warning = !!divergence || isV4V6Split;
 
   if (badgeMode === 'off') {
-    return { icon: { kind: 'default' }, badgeText: divergence ? '!' : '', badgeColor: '#f59e0b', title };
+    return { icon: { kind: 'default' }, badgeText: warning ? '!' : '', badgeColor: '#f59e0b', title };
   }
 
   // Two flags: IPv4/IPv6 split first, otherwise a divergence whose routes are in different countries.
@@ -258,18 +270,29 @@ async function updateToolbarDisplay(v4Info, v6Info, isOffline = false, probeErro
     const key = JSON.stringify(plan);
     if (key === appliedToolbarKey) return;
     appliedToolbarKey = '';
+    let iconOk = true;
     try {
-      await chrome.action.setIcon(await renderPlannedIcon(plan.icon));
+      const rendered = await renderPlannedIcon(plan.icon);
+      if (seq !== toolbarRenderSeq) return;
+      await chrome.action.setIcon(rendered);
     } catch (e) {
-      await chrome.action.setIcon(DEFAULT_ACTION_ICON).catch(() => {});
+      if (seq !== toolbarRenderSeq) return;
+      try {
+        await chrome.action.setIcon(DEFAULT_ACTION_ICON);
+      } catch (err) {
+        iconOk = false;
+      }
     }
+    if (seq !== toolbarRenderSeq) return;
     await chrome.action.setBadgeText({ text: plan.badgeText });
+    if (seq !== toolbarRenderSeq) return;
     if (plan.badgeColor) {
       await chrome.action.setBadgeBackgroundColor({ color: plan.badgeColor });
       await chrome.action.setBadgeTextColor?.({ color: BADGE_TEXT[plan.badgeColor] || '#ffffff' });
     }
+    if (seq !== toolbarRenderSeq) return;
     await chrome.action.setTitle({ title: plan.title });
-    appliedToolbarKey = key;
+    if (iconOk) appliedToolbarKey = key;
   });
   return toolbarApplyChain;
 }
@@ -307,6 +330,7 @@ async function deliverIPChangeNotification(type, oldIp, newGeo) {
     const oldCode = normalizeCountryCode(stored.announcedCountries?.[type]);
     if (!enableNotifs) {
       if (newCode) await rememberAnnouncedCountry(type, newCode);
+      else await forgetAnnouncedCountry(type);
       return true;
     }
     const lastNotif = stored[throttleKey] || 0;
@@ -318,27 +342,34 @@ async function deliverIPChangeNotification(type, oldIp, newGeo) {
     // a new address in the same country is a routine change.
     const countryChanged = !!(oldCode && newCode && oldCode !== newCode);
     const flagEmoji = newCode ? ` (${newCode})` : '';
-    const knownCountry = newCode ? ` in ${newGeo.country}` : '';
+    const newCountryName = newCode ? getFullCountryName(newCode, newGeo.country) : '';
+    const knownCountry = newCountryName ? ` in ${newCountryName}` : '';
     const message = countryChanged
-      ? `Changed from ${oldIp} to ${newGeo.ip}: ${getFullCountryName(oldCode, '')} → ${newGeo.country}`
+      ? `Changed from ${oldIp} to ${newGeo.ip}: ${getFullCountryName(oldCode, '')} → ${newCountryName}`
       : oldIp
         ? `Changed from ${oldIp} to ${newGeo.ip}${knownCountry}`
         : `Connected with ${newGeo.ip}${knownCountry}`;
 
-    const iconUrl = normalizeCountryCode(newGeo.countryCode)
-      ? chrome.runtime.getURL(`assets/flags/flag-${newGeo.countryCode.toLowerCase()}.png`)
-      : chrome.runtime.getURL('assets/icons/icon48.png');
+    let iconUrl = chrome.runtime.getURL('assets/icons/icon48.png');
+    if (newCode) {
+      const flagCandidate = chrome.runtime.getURL(`assets/flags/flag-${newCode.toLowerCase()}.png`);
+      try {
+        const flagRes = await fetch(flagCandidate, { method: 'HEAD' });
+        if (flagRes.ok) iconUrl = flagCandidate;
+      } catch (e) {}
+    }
 
     const delivered = await createNotification(notifId, {
       type: 'basic',
       iconUrl: iconUrl,
-      title: countryChanged ? `🚨 Country changed: ${oldCode} → ${newCode}` : `🌍 ${type} IP Changed${flagEmoji}`,
+      title: countryChanged ? `Country changed: ${oldCode} → ${newCode}` : `${type} IP Changed${flagEmoji}`,
       message: message,
       priority: 2
     });
     if (delivered) {
       await chrome.storage.local.set({ [throttleKey]: now });
       if (newCode) await rememberAnnouncedCountry(type, newCode);
+      else await forgetAnnouncedCountry(type);
     }
     return delivered;
   } catch (e) {
@@ -351,6 +382,15 @@ async function deliverIPChangeNotification(type, oldIp, newGeo) {
 async function rememberAnnouncedCountry(type, code) {
   const { announcedCountries } = await chrome.storage.local.get('announcedCountries');
   if (announcedCountries?.[type] !== code) await chrome.storage.local.set({ announcedCountries: { ...(announcedCountries || {}), [type]: code } });
+}
+
+async function forgetAnnouncedCountry(type) {
+  const { announcedCountries } = await chrome.storage.local.get('announcedCountries');
+  if (announcedCountries?.[type]) {
+    const updated = { ...announcedCountries };
+    delete updated[type];
+    await chrome.storage.local.set({ announcedCountries: updated });
+  }
 }
 
 // Resolves true once the divergence counts as announced (shown, or notifications are off). False
@@ -368,7 +408,7 @@ async function sendRouteDivergenceNotification(divergence, primaryInfo) {
     const delivered = await createNotification('leakhalo_route_divergence', {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('assets/icons/icon48.png'),
-      title: '⚠️ Sites see different IPs',
+      title: 'Sites see different IPs',
       message: `${divergence.primarySource}: ${where(divergence.primaryIp, primaryInfo)}\n${alts}\nA proxy, VPN rule or your internet provider's routing sends some sites through a different IP.`,
       priority: 2
     });
@@ -405,6 +445,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
         : Math.max(0, Date.parse(retryAfter || '') - Date.now());
       await markProviderCooldown(origin, Math.min(24 * 60 * 60_000, Math.max(5 * 60_000, parsed || 0)));
     }
+    if (res.status === 403) {
+      await markProviderCooldown(origin, 120_000);
+    }
     // Error answers are never read by the callers: release the body instead of downloading it.
     const length = Number(res.headers?.get?.('Content-Length'));
     if (!res.ok || length > MAX_RESPONSE_BYTES) {
@@ -412,14 +455,42 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
       if (res.ok) throw new Error('Response too large');
       return { ok: false, status: res.status, headers: res.headers, text: async () => '', json: async () => { throw new Error('No body'); } };
     }
-    // Read the body under the same deadline: a server that sends headers and then stalls must not
-    // hold up the probe (and every check queued behind it).
-    const aborted = new Promise((_, reject) => {
-      if (controller.signal.aborted) reject(new Error('Timed out'));
-      controller.signal.addEventListener('abort', () => reject(new Error('Timed out')), { once: true });
-    });
-    const body = await Promise.race([res.text(), aborted]);
-    if (body.length > MAX_RESPONSE_BYTES) throw new Error('Response too large');
+    let body = '';
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let totalBytes = 0;
+      const onAbort = () => { reader.cancel().catch(() => {}); };
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (controller.signal.aborted) throw new Error('Timed out');
+          if (done) break;
+          totalBytes += value.byteLength;
+          if (totalBytes > MAX_RESPONSE_BYTES) {
+            await reader.cancel().catch(() => {});
+            throw new Error('Response too large');
+          }
+          body += decoder.decode(value, { stream: true });
+        }
+        if (controller.signal.aborted) throw new Error('Timed out');
+        body += decoder.decode();
+      } catch (err) {
+        if (controller.signal.aborted) throw new Error('Timed out');
+        throw err;
+      } finally {
+        controller.signal.removeEventListener('abort', onAbort);
+      }
+    } else {
+      const aborted = new Promise((_, reject) => {
+        if (controller.signal.aborted) reject(new Error('Timed out'));
+        controller.signal.addEventListener('abort', () => reject(new Error('Timed out')), { once: true });
+      });
+      body = await Promise.race([res.text(), aborted]);
+      if (body.length > MAX_RESPONSE_BYTES) throw new Error('Response too large');
+    }
     return {
       ok: res.ok,
       status: res.status,
@@ -449,16 +520,19 @@ function isValidIPv4(ip) {
 }
 
 function isValidIPv6(ip) {
-  if (typeof ip !== 'string' || !ip.includes(':') || ip.length > 39 || !/^[0-9a-f:]+$/i.test(ip)) return false;
+  if (typeof ip !== 'string') return false;
+  ip = ip.trim();
+  if (!ip.includes(':') || ip.length > 39 || !/^[0-9a-f:]+$/i.test(ip)) return false;
   let canonical;
   try {
     canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
   } catch (e) {
     return false;
   }
-  // Unspecified, loopback, IPv4-mapped, link-local, unique-local and multicast addresses.
+  // Unspecified, loopback, IPv4-mapped, NAT64, discard-only, link-local, site-local, unique-local and multicast addresses.
   return !(canonical === '::' || canonical === '::1' || canonical.startsWith('::ffff:') ||
-    /^fe[89ab][0-9a-f]:/.test(canonical) || /^f[cd][0-9a-f]{2}:/.test(canonical) || /^ff[0-9a-f]{2}:/.test(canonical));
+    canonical.startsWith('64:ff9b:') || canonical.startsWith('100::') || /^fe[89abcdef][0-9a-f]:/.test(canonical) ||
+    /^f[cd][0-9a-f]{2}:/.test(canonical) || /^ff[0-9a-f]{2}:/.test(canonical));
 }
 
 // IPv4 is discovered from two independent vantage points at once:
@@ -481,7 +555,8 @@ async function firstIPv4(sources) {
 const CF_TRACE_V6_SKIP_MS = 10 * 60_000;
 let cfTraceV6Until = 0;
 
-async function probePublicIPv4() {
+async function probePublicIPv4(force = false) {
+  if (force) cfTraceV6Until = 0;
   const buster = `_t=${Date.now()}`;
   const plain = (url, source) => () => fetchWithTimeout(url, {}, 2000).then(async (res) => {
     if (!res.ok) throw new Error();
@@ -558,8 +633,8 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
     pairSince: {},
     pairSeen: {},
     lastPairAt: now,
-    edgeMisses: edge ? 0 : (state?.edgeMisses || 0) + 1,
-    indepMisses: independent ? 0 : (state?.indepMisses || 0) + 1,
+    edgeMisses: edge ? 0 : Math.min(GROUP_MISSES_AS_KNOWN, (state?.edgeMisses || 0) + 1),
+    indepMisses: independent ? 0 : Math.min(GROUP_MISSES_AS_KNOWN, (state?.indepMisses || 0) + 1),
     edgeSilentSince: edge ? null : (state?.edgeSilentSince || now),
     fallback: null, // strictly consecutive: only the independent-only branch below keeps it
     lastV4: ref ? { ip: ref.ip, vantage: ref.vantage || 'edge' } : null,
@@ -604,7 +679,7 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
   // a row: a single timeout on a dual-stack network must not drop the IPv4 card.
   const noAnswer = !edge && !independent;
   if (noAnswer && cachedIp && !(st.edgeMisses >= GROUP_MISSES_AS_KNOWN && st.indepMisses >= GROUP_MISSES_AS_KNOWN)) held = true;
-  const shownIp = primary ? primary.ip : ((held || noAnswer) ? cachedIp : null);
+  const shownIp = primary ? primary.ip : (held ? cachedIp : null);
   if (div && shownIp !== div.primaryIp) div = null; // the shown IP moved: old evidence is stale
   if (st.altSeen.primaryIp !== shownIp) st.altSeen = { primaryIp: shownIp, list: [] };
   if (primary) st.lastV4 = { ip: primary.ip, vantage: primary.vantage };
@@ -732,20 +807,20 @@ const regionNames = (() => {
 })();
 
 function getFullCountryName(code, fallbackName) {
-  // Short names where the CLDR English label is longer than the ISO 3166-1 short name.
+  const cleanCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
   const shortNames = { PS: 'Palestine' };
-  if (code && shortNames[code.toUpperCase()]) return shortNames[code.toUpperCase()];
-  if (code && regionNames) {
+  if (cleanCode && shortNames[cleanCode]) return shortNames[cleanCode];
+  if (cleanCode && regionNames) {
     try {
-      const name = regionNames.of(code.toUpperCase());
-      if (name && name !== code.toUpperCase()) return name;
+      const name = regionNames.of(cleanCode);
+      if (name && name !== cleanCode) return name;
     } catch (e) {}
   }
   const cleanFallback = (typeof fallbackName === 'string' && !fallbackName.startsWith('Unknown') && !fallbackName.startsWith('Detected')) ? fallbackName : '';
   if (cleanFallback && cleanFallback.length > 2) {
     return cleanFallback;
   }
-  return code || cleanFallback || 'Unknown Country';
+  return cleanCode || cleanFallback || 'Unknown Country';
 }
 
 // Pseudo codes that are not countries: XX/ZZ unknown, T1 Tor, A1/A2 anonymous proxy and
@@ -787,11 +862,14 @@ function splitAsnPrefix(org) {
 const RELAY_PATTERN = /\b(cloudflare warp|icloud private relay|private relay|mullvad|proton ?vpn|proton ag|nordvpn|nord security|expressvpn|express vpn|surfshark|windscribe|ivpn|private internet access|cyberghost|hide\.me|tor exit|vpn)\b/i;
 const MOBILE_PATTERN = /\b(mobile|cellular|irancell|mtn irancell|mobile communication company of iran|rightel|t-mobile|verizon wireless|vodafone mobile)\b/i;
 const DATACENTER_PATTERN = new RegExp('\\b(' + [
-  'hetzner', 'ovh', 'ovhcloud', 'digitalocean', 'amazon', 'aws', 'google cloud', 'google llc', 'linode', 'akamai',
+  'hetzner', 'ovh', 'ovhcloud', 'digitalocean', 'amazon', 'aws', 'google cloud', 'linode', 'akamai',
   'vultr', 'm247', 'leaseweb', 'choopa', 'oracle', 'cloudflare', 'fastly', 'serverius', 'contabo',
   'hostinger', 'tencent', 'alibaba', 'azure', 'microsoft', 'datacenter', 'data center', 'data centre', 'hosting',
   '(?<!st\\.? )cloud', 'servers?', 'vps', 'dedicated', 'colocation', 'hivelocity', 'cogent', 'psychz', 'quadranet',
-  'scaleway', 'equinix', 'ipvolume', 'datacamp', 'stark industries', 'aeza'
+  'scaleway', 'equinix', 'ipvolume', 'datacamp', 'stark industries', 'aeza',
+  'frantech', 'buyvm', 'constant company', 'amanah', 'tzulo', 'zenlayer', 'packet', 'iomart', 'upcloud', 'kamatera',
+  'worldstream', 'velia', 'ionos', '1and1', 'strato', 'aruba', 'selectel', 'timeweb', 'reg\\.ru', 'beget',
+  'gcore', 'edgecenter', 'cdn77', 'latitude\\.sh', 'cherry servers'
 ].join('|') + ')\\b', 'i');
 
 function classifyConnectionType(data) {
@@ -799,10 +877,10 @@ function classifyConnectionType(data) {
   const rawType = (data.type || '').toLowerCase();
 
   if (data.isVpn || data.isProxy || rawType === 'vpn' || rawType === 'proxy') return 'VPN / Relay';
-  if (data.isHosting || rawType === 'hosting' || rawType === 'datacenter') return 'Datacenter';
-  if (data.isMobile || rawType === 'cellular' || rawType === 'mobile') return 'Mobile';
   if (RELAY_PATTERN.test(text)) return 'VPN / Relay';
+  if (data.isMobile || rawType === 'cellular' || rawType === 'mobile') return 'Mobile';
   if (MOBILE_PATTERN.test(text)) return 'Mobile';
+  if (data.isHosting || rawType === 'hosting' || rawType === 'datacenter') return 'Datacenter';
   if (DATACENTER_PATTERN.test(text)) return 'Datacenter';
   if (['residential', 'isp', 'broadband'].includes(rawType)) return 'Residential';
   return 'Unknown';
@@ -816,9 +894,13 @@ const geoCacheReady = (chrome.storage.session?.get(GEO_CACHE_KEY) || Promise.res
 }).catch(() => {});
 
 function rememberGeo(ip, info) {
+  const now = Date.now();
+  for (const [k, v] of geoMemoryCache.entries()) {
+    if (!v?.updatedAt || now - v.updatedAt >= GEO_MEMORY_CACHE_MS) geoMemoryCache.delete(k);
+  }
   geoMemoryCache.delete(ip);
   geoMemoryCache.set(ip, info);
-  if (geoMemoryCache.size > 16) geoMemoryCache.delete(geoMemoryCache.keys().next().value);
+  if (geoMemoryCache.size > 8) geoMemoryCache.delete(geoMemoryCache.keys().next().value);
   chrome.storage.session?.set({ [GEO_CACHE_KEY]: Object.fromEntries(geoMemoryCache) }).catch(() => {});
 }
 
@@ -921,6 +1003,9 @@ async function fetchGeoLocation(ip, initialCountryCode = '', deadline = Infinity
     const res = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`, {}, timeLeft(3500));
     if (res.ok) {
       const data = await res.json();
+      if (data?.error && /limit|quota|too many/i.test(JSON.stringify(data.error))) {
+        await markProviderCooldown('https://ipinfo.io', 15 * 60_000);
+      }
       if (data && (data.country || data.org) && !data.error) {
         const countryCode = normalizeCountryCode(data.country) || normalizeCountryCode(initialCountryCode);
         const countryName = getFullCountryName(countryCode, '');
@@ -1061,17 +1146,20 @@ function scheduleErrRetry(delay) {
 const sessionStore = chrome.storage.session || chrome.storage.local;
 
 // Same fields as routeState apart from the probe timestamp, to skip rewriting an unchanged state.
-const sameRouteState = (a, b) => JSON.stringify({ ...(a || {}), lastPairAt: 0 }) === JSON.stringify({ ...(b || {}), lastPairAt: 0 });
+const sameRouteState = (a, b) => JSON.stringify({ ...(a || {}), lastPairAt: 0, pairSeen: null }) === JSON.stringify({ ...(b || {}), lastPairAt: 0, pairSeen: null });
 
-async function fetchAllBackgroundLocations(forceRefresh = false, minimumIntervalMs = PROBE_INTERVAL_MS) {
+async function fetchAllBackgroundLocations(forceRefresh = false, minimumIntervalMs = PROBE_INTERVAL_MS, isManual = false) {
   if (activeProbePromise) {
     if (!forceRefresh) return activeProbePromise;
+    if (isManual) queuedForceIsManual = true;
     if (!queuedForceProbePromise) {
-      // Freed as soon as the queued probe starts, so a request arriving while it runs queues
-      // another probe instead of reusing one that began before the request.
+      const qGen = probeGeneration;
       queuedForceProbePromise = activeProbePromise.catch(() => {}).then(() => {
+        if (qGen !== probeGeneration) return null;
+        const manual = queuedForceIsManual;
         queuedForceProbePromise = null;
-        return fetchAllBackgroundLocations(true, minimumIntervalMs);
+        queuedForceIsManual = false;
+        return fetchAllBackgroundLocations(true, minimumIntervalMs, manual);
       });
     }
     return queuedForceProbePromise;
@@ -1101,12 +1189,14 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       const cachedV6 = stored.latestV6Info || null;
       const result = (v4Info, v6Info, isOffline = false, probeError = false) => ({ v4Info, v6Info, isOffline, probeError });
       // Without any stored result there is nothing to fall back on, so the interval never applies.
-      const hasResult = !!(cachedV4 || cachedV6 || stored.isOffline || stored.probeError);
+      const hasPending = cachedV4?.pending === true || cachedV6?.pending === true;
+      const hasResult = !!((cachedV4 && !cachedV4.pending) || (cachedV6 && !cachedV6.pending) || stored.isOffline || stored.probeError);
       // The slower interval does not apply after a failed or offline check (recovery shows at
       // once) or while a different route is shown: the server only sees its own route.
       const watchRoutes = !!stored.routeDivergence && stored.appSettings?.warnRouteDivergence === true;
-      const interval = stored.isOffline || stored.probeError || watchRoutes ? Math.min(minimumIntervalMs, POPUP_PROBE_INTERVAL_MS) : minimumIntervalMs;
-      if (!forceRefresh && hasResult && Date.now() - (lastProbeAt || 0) < interval) {
+      const fastPopupWatch = minimumIntervalMs < PROBE_INTERVAL_MS && (stored.isOffline || stored.probeError || watchRoutes);
+      const interval = fastPopupWatch ? Math.min(minimumIntervalMs, POPUP_PROBE_INTERVAL_MS) : minimumIntervalMs;
+      if (!forceRefresh && !hasPending && hasResult && Date.now() - (lastProbeAt || 0) < interval) {
         return result(cachedV4, cachedV6, stored.isOffline === true, stored.probeError === true);
       }
 
@@ -1115,16 +1205,18 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       // The browser knows it has no network: show that at once, without requests that can only fail.
       // Mostly the 'online' event (or the alarm, if the worker slept) ends this state.
       if (!deviceOnline()) {
-        await commit({ isOffline: true, probeError: false });
-        if (current()) scheduleOfflineRetry(false);
+        resetErrGrace();
+        await commit({ isOffline: true, probeError: false, lastCheckedAt: Date.now() });
+        if (stored.appSettings?.enableAutoRefresh !== false && current()) scheduleOfflineRetry(false);
         await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, true, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
         return result(cachedV4, cachedV6, true, false);
       }
 
       const [observation, fastV6] = await Promise.all([
-        probePublicIPv4(),
+        probePublicIPv4(isManual),
         getFastPublicIPv6()
       ]);
+      if (!current()) return result(cachedV4, cachedV6, stored.isOffline === true, stored.probeError === true);
       const route = evaluateIPv4Route(observation, cachedV4, stored.routeState, stored.routeDivergence || null);
       const fastV4 = route.primary;
       const v4Held = route.held;
@@ -1135,23 +1227,28 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         // without internet). Otherwise the providers are the problem ("ERR"). Either way nothing
         // was learned about the routes, so the route state is left as it was.
         const isOffline = !deviceOnline() || !(await internetReachable());
+        const autoEnabled = stored.appSettings?.enableAutoRefresh !== false;
         if (isOffline) {
           resetErrGrace();
-          await commit({ isOffline: true, probeError: false });
-          if (current()) scheduleOfflineRetry();
+          await commit({ isOffline: true, probeError: false, lastCheckedAt: Date.now() });
+          if (autoEnabled && current()) scheduleOfflineRetry();
           await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, true, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
           return result(cachedV4, cachedV6, true, false);
         }
 
         resetOfflineRetry();
+        if (stored.isOffline === true) {
+          await chrome.storage.local.set({ isOffline: false, lastCheckedAt: Date.now() }).catch(() => {});
+          if (current()) await updateToolbarDisplay(cachedV4, cachedV6, false, false).catch(() => {});
+        }
         if (!errFailureStartedAt) {
           errFailureStartedAt = Date.now();
           errRetryStep = 0;
         }
         const failureDuration = Date.now() - errFailureStartedAt;
-        if (failureDuration >= ERR_GRACE_MS) {
-          await commit({ isOffline: false, probeError: true });
-          if (current()) scheduleErrRetry(10_000);
+        if (!autoEnabled || isManual || failureDuration >= ERR_GRACE_MS) {
+          await commit({ isOffline: false, probeError: true, lastCheckedAt: Date.now() });
+          if (autoEnabled && current()) scheduleErrRetry(10_000);
           await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, false, true).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
           return result(cachedV4, cachedV6, false, true);
         }
@@ -1165,9 +1262,10 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       resetOfflineRetry();
       resetErrGrace();
 
+      const effectiveHeld = v4Held && !!cachedV4?.ip;
       const v4Changed = !!fastV4 && cachedV4?.ip !== fastV4.ip;
-      const v6Changed = !!fastV6 && cachedV6?.ip !== fastV6;
-      const retainedV4 = v4Held ? cachedV4 : null;
+      const v6Changed = !!fastV6 && (!cachedV6?.ip || canonicalIPv6(cachedV6.ip) !== fastV6);
+      const retainedV4 = effectiveHeld ? cachedV4 : null;
       const pendingV4 = fastV4
         ? (v4Changed ? { ...makePendingGeoInfo(fastV4.ip, fastV4.countryCode), vantage: fastV4.vantage } : cachedV4)
         : retainedV4;
@@ -1175,7 +1273,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       const updateObj = { lastCheckedAt: Date.now() };
       if (stored.isOffline !== false) updateObj.isOffline = false;
       if (stored.probeError !== false) updateObj.probeError = false;
-      if (stored.v4Unverified !== v4Held) updateObj.v4Unverified = v4Held;
+      if (stored.v4Unverified !== effectiveHeld) updateObj.v4Unverified = effectiveHeld;
 
       if (v4Changed || v6Changed) {
         // Shown at once ("Locating…"); the change alerts follow once the new location is known.
@@ -1204,7 +1302,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
           }
           const age = Date.now() - (cachedV4?.updatedAt || 0);
           const needsEnrichment = v4Changed || !cachedV4?.updatedAt || cachedV4.pending === true ||
-            (geoIncomplete(cachedV4) && age >= GEO_RETRY_INTERVAL_MS) ||
+            (geoIncomplete(cachedV4) && (age >= GEO_RETRY_INTERVAL_MS || isManual)) ||
             (forceRefresh && age >= MANUAL_GEO_REFRESH_MS);
           // The memory cache serves a new or unfinished IP; retries and manual refreshes ask again.
           const useCache = v4Changed || cachedV4?.pending === true;
@@ -1216,7 +1314,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
           if (!fastV6) return null;
           const age = Date.now() - (cachedV6?.updatedAt || 0);
           const needsEnrichment = v6Changed || !cachedV6?.updatedAt || cachedV6.pending === true ||
-            (geoIncomplete(cachedV6) && age >= GEO_RETRY_INTERVAL_MS) ||
+            (geoIncomplete(cachedV6) && (age >= GEO_RETRY_INTERVAL_MS || isManual)) ||
             (forceRefresh && age >= MANUAL_GEO_REFRESH_MS);
           if (!needsEnrichment) return cachedV6;
           const info = await getGeoLocation(fastV6, '', v6Changed || cachedV6?.pending === true);
@@ -1230,17 +1328,22 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         withTimeout(geoV4, NOTIFY_GEO_WAIT_MS, () => pendingV4),
         withTimeout(geoV6, NOTIFY_GEO_WAIT_MS, () => pendingV6)
       ]);
+      let v6Notice = null;
       if (current()) {
         // IPv6: compared with the last address seen, even if IPv6 was briefly absent in between.
-        const v6From = cachedV6?.ip || stored.lastKnownV6Ip || null;
-        const v6Notice = v6Changed && v6From && v6From !== fastV6 ? { from: stored.pendingV6Notice?.from || v6From, to: fastV6 } : stored.pendingV6Notice;
+        const v6From = cachedV6?.ip ? canonicalIPv6(cachedV6.ip) : (stored.lastKnownV6Ip ? canonicalIPv6(stored.lastKnownV6Ip) : null);
+        v6Notice = v6Changed && v6From && v6From !== fastV6
+          ? { from: stored.pendingV6Notice?.from || v6From, to: fastV6 }
+          : (stored.pendingV6Notice || null);
         if (v6Notice) {
-          if (alertV6?.ip !== v6Notice.to || stored.appSettings?.notifyIPv6 === false) {
-            if (stored.pendingV6Notice) await commit({ pendingV6Notice: null }); // superseded, or switched off
-          } else {
-            // Kept until delivered: a throttled or failed IPv6 alert is retried on the next check.
+          const superseded = !!fastV6 && alertV6?.ip !== v6Notice.to;
+          if (v6Notice.from === v6Notice.to || superseded || stored.appSettings?.notifyIPv6 === false) {
+            v6Notice = null;
+            if (stored.pendingV6Notice) await commit({ pendingV6Notice: null });
+          } else if (fastV6 && alertV6?.ip === v6Notice.to) {
             const delivered = await sendIPChangeNotification('IPv6', v6Notice.from, alertV6);
-            await commit({ pendingV6Notice: delivered ? null : v6Notice });
+            v6Notice = delivered ? null : v6Notice;
+            await commit({ pendingV6Notice: v6Notice });
           }
         }
         // announcedIp advances only after delivery, so a throttled alert is retried.
@@ -1269,8 +1372,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         const v4Code = normalizeCountryCode(finalV4?.countryCode);
         if (v4Code && finalV4.ip === route.state.announcedIp) await rememberAnnouncedCountry('IPv4', v4Code);
         const v6Code = normalizeCountryCode(finalV6?.countryCode);
-        const v6Pending = (await chrome.storage.local.get('pendingV6Notice')).pendingV6Notice;
-        if (v6Code && !v6Pending) await rememberAnnouncedCountry('IPv6', v6Code);
+        if (v6Code && !v6Notice) await rememberAnnouncedCountry('IPv6', v6Code);
       }
 
       if (JSON.stringify(cachedV4) !== JSON.stringify(finalV4)) updateObj.latestV4Info = finalV4;
@@ -1355,8 +1457,10 @@ async function queryIdleState(seconds) {
 }
 
 async function runWatcherTick() {
-  // Calling an extension API (chrome.idle.queryState) each tick resets Chrome's service worker
-  // idle timer, keeping this background worker alive indefinitely while the user is active.
+  const cGen = clearGeneration;
+  // While active, queries idle state to detect whether the user is active or away. In modern
+  // Chromium (120+), the service worker is governed by Chrome's lifecycle and alarms ensure
+  // ongoing 30s checks even after the worker sleeps; the 3s watcher loop runs while the worker is active.
   const idleState = await queryIdleState(IDLE_SECONDS);
   if (idleState === 'idle' || idleState === 'locked') {
     stopWatcher();
@@ -1371,17 +1475,33 @@ async function runWatcherTick() {
     return;
   }
 
-  const url = WATCHER_TRACE_URLS[watcherTraceIndex % WATCHER_TRACE_URLS.length];
+  await providerCooldownReady;
+  const now = Date.now();
+  const candidates = [];
+  for (let i = 0; i < WATCHER_TRACE_URLS.length; i++) {
+    const candidate = WATCHER_TRACE_URLS[(watcherTraceIndex + i) % WATCHER_TRACE_URLS.length];
+    if ((providerCooldowns[new URL(candidate).origin] || 0) <= now) candidates.push(candidate);
+  }
   watcherTraceIndex++;
+  if (!candidates.length) return;
 
   let traceText = null;
-  try {
-    const res = await fetchWithTimeout(url, {}, 2000);
-    if (res?.ok) {
-      traceText = await res.text();
+  for (const url of candidates) {
+    const origin = new URL(url).origin;
+    try {
+      const res = await fetchWithTimeout(url, {}, 2000);
+      if (cGen !== clearGeneration) return;
+      if (res?.ok) {
+        traceText = await res.text();
+        break;
+      }
+      if ((providerCooldowns[origin] || 0) > Date.now()) continue;
+      break;
+    } catch (e) {
+      if ((providerCooldowns[origin] || 0) > Date.now()) continue;
+      traceText = null;
+      break;
     }
-  } catch (e) {
-    traceText = null;
   }
 
   let traceIp = null;
@@ -1389,14 +1509,16 @@ async function runWatcherTick() {
   if (traceText) {
     const ipMatch = traceText.match(/^ip=([^\r\n]+)/m);
     const locMatch = traceText.match(/^loc=([^\r\n]+)/m);
-    const ip = ipMatch ? ipMatch[1].trim() : '';
+    const ip = ipMatch ? ipMatch[1].trim() : traceText.trim();
     if (isValidIPv4(ip) || isValidIPv6(ip)) {
       traceIp = ip;
       traceLoc = locMatch && locMatch[1] ? normalizeCountryCode(locMatch[1].trim()) : '';
     }
   }
 
-  const stored = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError']);
+  const stored = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError', 'v4Unverified']);
+  if (cGen !== clearGeneration) return;
+  if (stored.v4Unverified !== true) lastUnverifiedWatcherAt = 0;
 
   // A probe is started only when the trace answer itself changes (or after a failed check): the
   // shown IP can legitimately differ from the trace (Cloudflare's country database, an IPv6 the
@@ -1404,30 +1526,39 @@ async function runWatcherTick() {
   let shouldTrigger = false;
   let key = lastTraceKey;
   if (traceIp) {
-    traceConsecutiveFailures = 0;
     traceSucceededOnce = true;
     traceFailureTriggered = false;
     const isV6 = traceIp.includes(':');
+    if (!isV6) cfTraceV6Until = 0;
     const ip = isV6 ? canonicalIPv6(traceIp) : traceIp;
     key = `${ip}|${traceLoc}`;
     const shown = isV6 ? stored.latestV6Info : stored.latestV4Info;
     const shownIp = shown?.ip ? (isV6 ? canonicalIPv6(shown.ip) : shown.ip) : null;
     const shownCountry = normalizeCountryCode(shown?.countryCode);
     const differs = !shownIp || ip !== shownIp || (!!shownCountry && !!traceLoc && shownCountry !== traceLoc);
-    shouldTrigger = stored.isOffline === true || stored.probeError === true || (differs && key !== lastTraceKey);
+    const retryUnverified = !isV6 && stored.v4Unverified === true && (now - lastUnverifiedWatcherAt >= 15_000);
+    shouldTrigger = stored.isOffline === true || stored.probeError === true || retryUnverified || (differs && key !== lastTraceKey);
   } else {
-    traceConsecutiveFailures++;
     // A connection lost or changing: one probe for the whole failure streak (it decides between
     // offline and ERR, with its own grace period).
     shouldTrigger = traceSucceededOnce && !traceFailureTriggered;
   }
 
   // While a probe runs, the trigger is kept for the next tick instead of being dropped.
+  if (!watcherRunning) return;
   if (shouldTrigger && activeProbePromise) return;
   lastTraceKey = key;
   if (shouldTrigger) {
     if (!traceIp) traceFailureTriggered = true;
-    fetchAllBackgroundLocations(true).catch(() => {});
+    else if (stored.v4Unverified === true && !traceIp.includes(':')) lastUnverifiedWatcherAt = now;
+    const expectedIp = traceIp ? (traceIp.includes(':') ? canonicalIPv6(traceIp) : traceIp) : '';
+    const isV6Trace = !!traceIp && traceIp.includes(':');
+    fetchAllBackgroundLocations(true).then((res) => {
+      if (!expectedIp || isV6Trace) return;
+      if (res?.v4Info?.vantage !== 'edge' && lastTraceKey === key) {
+        lastTraceKey = '';
+      }
+    }).catch(() => {});
   }
 }
 
@@ -1443,13 +1574,13 @@ async function watcherLoop(generation = watcherGeneration) {
   }
 }
 
-function startWatcher() {
+function startWatcher(delayMs = 0) {
   if (watcherRunning) return;
   watcherRunning = true;
   const generation = ++watcherGeneration;
   try { chrome.idle?.setDetectionInterval?.(IDLE_SECONDS); } catch (e) {}
   clearTimeout(watcherTimer);
-  watcherTimer = setTimeout(() => watcherLoop(generation), 0);
+  watcherTimer = setTimeout(() => watcherLoop(generation), delayMs);
   if (typeof watcherTimer === 'object' && typeof watcherTimer?.unref === 'function') watcherTimer.unref();
 }
 
@@ -1477,9 +1608,9 @@ if (chrome.idle?.onStateChanged) {
   chrome.idle.onStateChanged.addListener(async (state) => {
     if (state === 'active') {
       const { appSettings } = await chrome.storage.local.get('appSettings');
-      if (fastDetectionEnabled(appSettings)) {
-        startWatcher();
-        fetchAllBackgroundLocations(true).catch(() => {});
+      if (appSettings?.enableAutoRefresh !== false) {
+        if (fastDetectionEnabled(appSettings)) startWatcher(WATCH_INTERVAL_MS);
+        fetchAllBackgroundLocations(true).finally(() => syncWatcher().catch(() => {}));
       }
     } else if (state === 'idle' || state === 'locked') {
       stopWatcher();
@@ -1518,11 +1649,54 @@ async function autoRefresh() {
   ]);
 }
 
+function parseMajorMinor(version) {
+  const m = String(version || '').match(/^(\d+)\.(\d+)/);
+  return m ? `${Number(m[1])}.${Number(m[2])}` : '0.0';
+}
+
+async function syncReviewPromptState() {
+  try {
+    const currentMinor = parseMajorMinor(chrome.runtime.getManifest?.()?.version);
+    const { reviewPrompt } = await chrome.storage.local.get('reviewPrompt');
+    const now = Date.now();
+    if (!reviewPrompt || typeof reviewPrompt !== 'object') {
+      await chrome.storage.local.set({
+        reviewPrompt: {
+          installedAt: now,
+          trackedMinor: currentMinor,
+          opensInMinor: 0,
+          dismissCount: 0,
+          dismissedAt: 0,
+          dismissedMinor: '',
+          completed: false
+        }
+      });
+      return;
+    }
+    if (reviewPrompt.trackedMinor !== currentMinor) {
+      await chrome.storage.local.set({
+        reviewPrompt: {
+          ...reviewPrompt,
+          trackedMinor: currentMinor,
+          opensInMinor: 0
+        }
+      });
+    }
+  } catch (e) {}
+}
+
 // Every worker start already runs the setup at the bottom of this file (alarm, policies, toolbar,
 // watcher); these events add only what is specific to them.
 chrome.runtime.onInstalled.addListener((details) => {
+  syncReviewPromptState().catch(() => {});
   syncWatcher().catch(() => {});
-  fetchAllBackgroundLocations(true).catch(() => {});
+  if (details?.reason === 'install') {
+    fetchAllBackgroundLocations(true).catch(() => {});
+  } else {
+    autoChecksEnabled().then(on => {
+      if (on) fetchAllBackgroundLocations(true).catch(() => {});
+    }).catch(() => {});
+  }
   if (details?.reason === 'install') {
     chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') }).catch(() => {});
   }
@@ -1530,7 +1704,17 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 chrome.runtime.onStartup.addListener(() => {
   syncWatcher().catch(() => {});
-  autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
+  autoChecksEnabled().then(on => {
+    if (on) return fetchAllBackgroundLocations(true);
+    if (deviceOnline()) {
+      chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline'], (res) => {
+        if (res.isOffline === true) {
+          chrome.storage.local.set({ isOffline: false });
+          updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, false, false);
+        }
+      });
+    }
+  }).catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -1543,13 +1727,24 @@ const IP_DATA_KEYS = ['latestV4Info', 'latestV6Info', 'routeState', 'routeDiverg
   'fastChannelIp', 'announcedCountries', 'lastNotifTimeIPv4', 'lastNotifTimeIPv6', 'lastRouteNotifTime', 'providerCooldowns',
   'isOffline', 'probeError', 'v4Unverified', 'lastCheckedAt', 'lastProbeAt'];
 async function clearStoredIpData() {
+  clearGeneration++;
   probeGeneration++; // a check still running must not write its result back
+  await providerCooldownReady;
   resetErrGrace();
+  resetOfflineRetry();
+  cfTraceV6Until = 0;
+  lastTraceKey = '';
+  lastUnverifiedWatcherAt = 0;
+  traceSucceededOnce = false;
+  traceFailureTriggered = false;
   await chrome.storage.local.remove(IP_DATA_KEYS);
   await chrome.storage.session?.clear().catch(() => {});
   geoMemoryCache.clear();
   for (const key of Object.keys(providerCooldowns)) delete providerCooldowns[key];
   appliedToolbarKey = '';
+  activeProbePromise = null;
+  queuedForceProbePromise = null;
+  queuedForceIsManual = false;
   await updateToolbarDisplay(null, null, false, false);
   if (await autoChecksEnabled()) fetchAllBackgroundLocations(true).catch(() => {});
 }
@@ -1583,8 +1778,10 @@ function updateSettings(patch) {
     const changed = (key) => key in fields && fields[key] !== previous[key];
     if (Object.keys(fields).some(changed)) await chrome.storage.local.set({ appSettings: next });
     // Re-applied when a privacy field changed, and as a retry while the policy is not confirmed.
-    const shieldEffective = PRIVACY_KEYS.some(changed) || storedEffective !== true
-      ? await applyPrivacyShield() : true;
+    const privacyChanged = PRIVACY_KEYS.some(changed);
+    const retryNeeded = next.enableAntiLeakShield !== false && storedEffective !== true;
+    const shieldEffective = privacyChanged || retryNeeded
+      ? await applyPrivacyShield() : (next.enableAntiLeakShield === false ? false : true);
     const autoWasOff = previous.enableAutoRefresh === false;
     if (next.enableAutoRefresh === false) {
       resetOfflineRetry();
@@ -1625,7 +1822,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.type === 'REFRESH_NOW') {
-    fetchAllBackgroundLocations(true).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
+    fetchAllBackgroundLocations(true, PROBE_INTERVAL_MS, true).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
     return true;
   }
   if (request.type === 'CHECK_NETWORK') {
@@ -1663,6 +1860,7 @@ chrome.storage.onChanged?.addListener((changes, area) => {
 // Network events: back online, reconnect and check right away; offline, show it right away.
 if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
   self.addEventListener('online', () => {
+    cfTraceV6Until = 0;
     syncWatcher().catch(() => {});
     resetOfflineRetry();
     resetErrGrace();

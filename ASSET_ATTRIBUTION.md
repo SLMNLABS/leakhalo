@@ -8,8 +8,8 @@ Square Flags is based on [HatScripts/circle-flags](https://github.com/HatScripts
 
 The publisher supplied the new LeakHalo artwork on 2026-09-29. `assets/brand/icon-only.png`, `wordmark.png`, and `flat-mark.png` are optimized from the supplied icon-only, text, and minimal-icon PNGs respectively. The extension icons in `assets/icons/` are sized from the minimal mark. The publisher previously confirmed ownership of the original logo and extension icons.
 
-`assets/brand/salman-labs.png` is cropped from the publisher-supplied Salman Labs logo shared on 2026-09-29 and appears next to the publisher name in Settings.
+`assets/brand/salman-labs.png` is cropped from the publisher-supplied Salman Labs logo shared on 2026-09-29 and appears next to the publisher name in Settings and the Welcome page.
 
-The package, shield-check, and external-link SVG paths in `options/options.html` come from [Lucide](https://github.com/lucide-icons/lucide). The license and notices are included in `assets/icons/LICENSE-lucide.txt`.
+The icons and SVG paths in `popup/popup.html`, `options/options.html`, and `welcome/welcome.html` come from [Lucide](https://github.com/lucide-icons/lucide). The license and notices are included in `assets/icons/LICENSE-lucide.txt`.
 
 The welcome page's globe (`welcome/land.js`) samples land points from [Natural Earth](https://www.naturalearthdata.com/) (public domain) via the [world-atlas](https://github.com/topojson/world-atlas) package (ISC).

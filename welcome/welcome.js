@@ -27,17 +27,18 @@ const regionNames = (() => {
 })();
 
 function getFullCountryName(code, fallbackName) {
+  const cleanCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
   const shortNames = { PS: 'Palestine' };
-  if (code && shortNames[code.toUpperCase()]) return shortNames[code.toUpperCase()];
-  if (code && regionNames) {
+  if (cleanCode && shortNames[cleanCode]) return shortNames[cleanCode];
+  if (cleanCode && regionNames) {
     try {
-      const name = regionNames.of(code.toUpperCase());
-      if (name && name !== code.toUpperCase()) return name;
+      const name = regionNames.of(cleanCode);
+      if (name && name !== cleanCode) return name;
     } catch (error) {}
   }
   const cleanFallback = (typeof fallbackName === 'string' && !fallbackName.startsWith('Unknown') && !fallbackName.startsWith('Detected')) ? fallbackName : '';
   if (cleanFallback && cleanFallback.length > 2) return cleanFallback;
-  return code || cleanFallback || 'Unknown Country';
+  return cleanCode || cleanFallback || 'Unknown Country';
 }
 
 function formatIspAsn(rawIsp, rawAsn) {
@@ -81,6 +82,13 @@ function country(info) {
   return getFullCountryName(code, code ? info.country : '');
 }
 
+function formatShownIp(ip, mask) {
+  if (!mask || !ip) return ip;
+  if (!ip.includes(':')) return ip.split('.').slice(0, 2).concat('•••', '•••').join('.');
+  if (ip.startsWith('::')) return '::•••';
+  return `${ip.split(':').slice(0, 2).join(':')}:•••`;
+}
+
 function render() {
   const settings = state.appSettings || {};
   const v4 = state.latestV4Info?.ip ? state.latestV4Info : null;
@@ -89,7 +97,7 @@ function render() {
   const offline = state.isOffline === true;
   const failed = !offline && (state.probeError === true || (!info && checkFailed));
   const loading = !info && !offline && !failed;
-  const pending = !!(v4?.pending || v6?.pending);
+  const pending = info?.pending === true;
   const signature = pending ? `${v4?.ip}|${v4?.pending}|${v6?.ip}|${v6?.pending}` : '';
   if (signature !== pendingSignature) {
     pendingSignature = signature;
@@ -107,8 +115,10 @@ function render() {
   const v6Only = !v4 && !!v6 && !offline && !failed;
   setText('primaryIpLabel', v4 ? 'Public IPv4' : v6Only ? 'Public IPv6' : 'Public IP');
   setText('secondaryFactLabel', v6Only ? 'IPv4' : 'IPv6');
-  setText('connectionV4', offline || failed ? 'Unavailable' : info?.ip || (loading ? 'Checking…' : 'Not detected'));
-  setText('connectionV6', offline || failed ? 'Unavailable' : v6Only ? 'Not detected' : v6?.ip || (loading ? 'Checking…' : 'Not detected'));
+  byId('connectionV4').classList.toggle('compact', !!(info?.ip && info.ip.includes(':')));
+  const mask = settings.maskIp === true;
+  setText('connectionV4', offline || failed ? 'Unavailable' : info?.ip ? formatShownIp(info.ip, mask) : (loading ? 'Checking…' : 'Not detected'));
+  setText('connectionV6', offline || failed ? 'Unavailable' : v6Only ? 'Not detected' : v6?.ip ? formatShownIp(v6.ip, mask) : (loading ? 'Checking…' : 'Not detected'));
   // Only a real country under the IPv6 address, never "Unknown Country" or "Locating…".
   const v6Code = v6 ? realCountryCode(v6.countryCode) : '';
   setText('connectionV6Location', !offline && !failed && v6 && !v6Only ? [v6Code ? getFullCountryName(v6Code, v6.country) : '', v6.city].filter(Boolean).join(' · ') : '');
@@ -123,8 +133,14 @@ function render() {
   for (const [key, control] of Object.entries(controls)) {
     if (!pendingCounts.has(key)) control.checked = settings[key] !== false;
   }
-  // The globe uses the IPv4 location, or the IPv6 one when IPv4 has no coordinates.
-  const hasCoords = x => x && ![x.lat, x.lon].some(value => value === null || value === undefined || value === '');
+  if (controls.enableFastDetection) {
+    controls.enableFastDetection.disabled = settings.enableAutoRefresh === false;
+  }
+  const hasCoords = x => {
+    if (!x || [x.lat, x.lon].some(value => value === null || value === undefined || value === '')) return false;
+    const la = Number(x.lat), lo = Number(x.lon);
+    return Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && !(la === 0 && lo === 0);
+  };
   globe.setTarget(!offline && !failed ? (hasCoords(v4) ? v4 : hasCoords(v6) ? v6 : info) : null);
 }
 
@@ -143,6 +159,8 @@ function queueSave(key, value) {
     try {
       const response = await chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', patch: { [key]: value } });
       if (response?.status !== 'ok') throw new Error('Browser setting update failed');
+      if (response.settings) state.appSettings = response.settings;
+      if (typeof response.shieldEffective === 'boolean') state.shieldEffective = response.shieldEffective;
     } catch (error) {
       batchFailed = true;
     } finally {
@@ -186,6 +204,8 @@ const globe = (() => {
     return `rgba(${Math.round(90 + 60 * z)},${Math.round(170 + 60 * z)},255,${(.25 + .75 * z).toFixed(3)})`;
   });
   const bucketCounts = new Uint32Array(BUCKETS);
+  const bucketOffsets = new Uint32Array(BUCKETS);
+  const bucketStarts = new Uint32Array(BUCKETS);
   const bucketOrder = new Uint32Array(n);
   let gradients = null;
 
@@ -215,6 +235,7 @@ const globe = (() => {
   }
   function draw(t) {
     if (!size) resize();
+    if (!size) return;
     const W = canvas.width, dpr = W / (size || 1), cx = W / 2, cy = W / 2, R = W * 0.38;
     ctx.clearRect(0, 0, W, W);
     // Follow the user's location with a slow sway; drift gently without one.
@@ -246,14 +267,14 @@ const globe = (() => {
     const count = nf / 3;
     bucketCounts.fill(0);
     for (let k = 0; k < count; k++) bucketCounts[Math.min(BUCKETS - 1, (front[k * 3 + 2] * BUCKETS) | 0)]++;
-    const offsets = new Uint32Array(BUCKETS);
-    for (let b = 1; b < BUCKETS; b++) offsets[b] = offsets[b - 1] + bucketCounts[b - 1];
-    const starts = offsets.slice();
-    for (let k = 0; k < count; k++) bucketOrder[offsets[Math.min(BUCKETS - 1, (front[k * 3 + 2] * BUCKETS) | 0)]++] = k;
+    bucketOffsets[0] = 0;
+    for (let b = 1; b < BUCKETS; b++) bucketOffsets[b] = bucketOffsets[b - 1] + bucketCounts[b - 1];
+    bucketStarts.set(bucketOffsets);
+    for (let k = 0; k < count; k++) bucketOrder[bucketOffsets[Math.min(BUCKETS - 1, (front[k * 3 + 2] * BUCKETS) | 0)]++] = k;
     for (let b = 0; b < BUCKETS; b++) {
       if (!bucketCounts[b]) continue;
       ctx.fillStyle = bucketColors[b];
-      for (let j = starts[b], end = starts[b] + bucketCounts[b]; j < end; j++) {
+      for (let j = bucketStarts[b], end = bucketStarts[b] + bucketCounts[b]; j < end; j++) {
         const k = bucketOrder[j] * 3;
         ctx.fillRect(front[k] - dot / 2, front[k + 1] - dot / 2, dot, dot);
       }
@@ -309,11 +330,14 @@ const globe = (() => {
       // null/'' would become 0 through Number(): a missing coordinate is no location.
       const missing = value => value === null || value === undefined || value === '';
       const lat = missing(info?.lat) ? NaN : Number(info.lat), lon = missing(info?.lon) ? NaN : Number(info.lon);
-      const ok = info && Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
+      const ok = info && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
       const changed = (ok ? `${lat},${lon}` : '') !== (target ? `${target.lat},${target.lon}` : '');
       target = ok ? { lat, lon } : null;
       if (ok) {
-        const text = `You appear here · ${[info.city, getFullCountryName(realCountryCode(info.countryCode), realCountryCode(info.countryCode) ? info.country : '')].filter(Boolean)[0] || ''}`.replace(/ · $/, '');
+        const countryName = getFullCountryName(realCountryCode(info.countryCode), realCountryCode(info.countryCode) ? info.country : '');
+        const validCountry = countryName && countryName !== 'Unknown Country' ? countryName : '';
+        const locationPart = info.city || validCountry;
+        const text = locationPart ? `You appear here · ${locationPart}` : 'You appear here';
         if (byId('globeLabelText').textContent !== text || label.hidden) {
           setText('globeLabelText', text);
           // Measured visible (a hidden element has no width); the next frame places it.
@@ -338,6 +362,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   for (const key of stateKeys) {
     if (changes[key]) { state[key] = changes[key].newValue; changed = true; }
   }
+  if (state.latestV4Info?.ip || state.latestV6Info?.ip) {
+    checkFailed = false;
+    clearTimeout(firstCheckTimer);
+  }
   if (changed) render();
 });
 chrome.storage.local.get(stateKeys).then(data => {
@@ -356,9 +384,10 @@ const firstCheckTimer = setTimeout(() => { checkFailed = true; render(); }, 30_0
 // One check on load also re-enriches a pending result left by an interrupted worker.
 // Not forced: at install the worker is already running its first check, and this joins it.
 chrome.runtime.sendMessage({ type: 'CHECK_NETWORK', force: false }).then(async () => {
-  clearTimeout(firstCheckTimer);
   state = { ...state, ...(await chrome.storage.local.get(stateKeys)) };
-  checkFailed = true; // only affects an empty result; stored failure/offline flags remain authoritative
+  if (state.latestV4Info?.ip || state.latestV6Info?.ip || state.probeError || state.isOffline) {
+    clearTimeout(firstCheckTimer);
+  }
   render();
 }).catch(() => {
   clearTimeout(firstCheckTimer);
@@ -429,6 +458,11 @@ if (typeof chrome.action?.getUserSettings === 'function') {
 }
 window.addEventListener('pagehide', () => { clearInterval(pinPoll); clearTimeout(firstCheckTimer); clearTimeout(locationTimer); clearTimeout(copyTimer); });
 
+byId('pinCloseBtn')?.addEventListener('click', () => {
+  const card = byId('pinCard');
+  if (card) card.hidden = true;
+});
+
 byId('openPopup').addEventListener('click', async () => {
   try {
     if (typeof chrome.action?.openPopup !== 'function') throw new Error('Popup API unavailable');
@@ -447,3 +481,7 @@ for (const link of document.querySelectorAll('[data-options]')) link.addEventLis
   catch (error) { setSaveStatus('Could not open Settings. Try the Settings link again.', 'error'); }
 });
 setText('appVersion', chrome.runtime.getManifest().version);
+
+const menuTitle = document.querySelector('.chrome-menu-row span:nth-child(2)');
+const localizedName = chrome.i18n?.getMessage?.('extName');
+if (menuTitle && localizedName) menuTitle.textContent = localizedName;
