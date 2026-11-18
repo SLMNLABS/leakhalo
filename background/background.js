@@ -58,6 +58,20 @@ async function markProviderCooldown(origin, delayMs) {
   await chrome.storage.local.set({ providerCooldowns: { ...providerCooldowns } }).catch(() => {});
 }
 
+const networkCooldowns = {};
+function markNetworkCooldown(origin, delayMs = 10 * 60_000) {
+  if (origin) networkCooldowns[origin] = Date.now() + delayMs;
+}
+function clearNetworkCooldowns() {
+  for (const key of Object.keys(networkCooldowns)) delete networkCooldowns[key];
+}
+function isOriginCoolingDown(origin) {
+  const now = Date.now();
+  if ((providerCooldowns[origin] || 0) > now) return true;
+  if ((networkCooldowns[origin] || 0) > now) return true;
+  return false;
+}
+
 async function loadBitmap(path) {
   try {
     const response = await fetch(chrome.runtime.getURL(path));
@@ -426,9 +440,19 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
   await providerCooldownReady;
   const origin = new URL(url).origin;
-  if ((providerCooldowns[origin] || 0) > Date.now()) throw new Error('Provider cooling down');
+  if (isOriginCoolingDown(origin)) throw new Error('Provider cooling down');
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
+  let onExternalAbort = null;
+  if (options.signal) {
+    if (options.signal.aborted) {
+      clearTimeout(id);
+      controller.abort();
+    } else {
+      onExternalAbort = () => controller.abort();
+      options.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
   try {
     const res = await fetch(url, {
       ...options,
@@ -500,6 +524,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
     };
   } finally {
     clearTimeout(id);
+    if (options.signal && onExternalAbort) {
+      options.signal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 
@@ -555,8 +582,11 @@ async function firstIPv4(sources) {
 const CF_TRACE_V6_SKIP_MS = 10 * 60_000;
 let cfTraceV6Until = 0;
 
-async function probePublicIPv4(force = false) {
-  if (force) cfTraceV6Until = 0;
+async function probePublicIPv4(isManual = false) {
+  if (isManual) {
+    cfTraceV6Until = 0;
+    clearNetworkCooldowns();
+  }
   const buster = `_t=${Date.now()}`;
   const plain = (url, source) => () => fetchWithTimeout(url, {}, 2000).then(async (res) => {
     if (!res.ok) throw new Error();
@@ -585,12 +615,20 @@ async function probePublicIPv4(force = false) {
     if (data && isValidIPv4(data.ip)) return { ip: data.ip.trim(), countryCode: '', source: 'ipify' };
     throw new Error();
   });
+  const identMe = () => plain(`https://v4.ident.me?${buster}`, 'ident.me')();
+  const seeIp = () => plain(`https://ipv4.seeip.org?${buster}`, 'seeip')();
+
+  const edgeSources = [];
+  if (Date.now() >= cfTraceV6Until && !isOriginCoolingDown('https://cloudflare.com')) {
+    edgeSources.push(cloudflare);
+  }
+  edgeSources.push(plain(`https://ipv4.icanhazip.com?${buster}`, 'icanhazip'));
+
   const [edge, independent] = await Promise.all([
-    firstIPv4(Date.now() < cfTraceV6Until
-      ? [plain(`https://ipv4.icanhazip.com?${buster}`, 'icanhazip')]
-      : [cloudflare, plain(`https://ipv4.icanhazip.com?${buster}`, 'icanhazip')]),
-    firstIPv4([ipify, plain(`https://checkip.amazonaws.com?${buster}`, 'Amazon')])
+    firstIPv4(edgeSources),
+    firstIPv4([ipify, identMe, seeIp])
   ]);
+
   return { edge, independent };
 }
 
@@ -784,15 +822,32 @@ function getFastPublicIPv6() {
     if (data && isValidIPv6(data.ip)) return canonicalIPv6(data.ip);
     throw new Error();
   });
+  const identMe = (timeoutMs) => fetchWithTimeout(`https://v6.ident.me?${buster}`, {}, timeoutMs).then(async (res) => {
+    if (!res.ok) throw new Error();
+    const text = await res.text();
+    if (isValidIPv6(text?.trim())) return canonicalIPv6(text);
+    throw new Error();
+  });
+  const seeIp = (timeoutMs) => fetchWithTimeout(`https://ipv6.seeip.org?${buster}`, {}, timeoutMs).then(async (res) => {
+    if (!res.ok) throw new Error();
+    const text = await res.text();
+    if (isValidIPv6(text?.trim())) return canonicalIPv6(text);
+    throw new Error();
+  });
   return new Promise((resolve) => {
     const started = Date.now();
     let primaryDone = false, primaryIp = null, backup = null, settled = false;
     const finish = (ip) => { if (!settled) { settled = true; clearTimeout(hedge); resolve(ip); } };
     const startBackup = () => {
       if (backup) return;
-      backup = ipify(Math.max(300, IPV6_TIMEOUT_MS - (Date.now() - started)))
-        .then(ip => { if (!primaryDone || !primaryIp) finish(ip); })
-        .catch(() => { if (primaryDone) finish(primaryIp); });
+      const remainingMs = Math.max(300, IPV6_TIMEOUT_MS - (Date.now() - started));
+      backup = Promise.any([
+        ipify(remainingMs),
+        identMe(remainingMs),
+        seeIp(remainingMs)
+      ])
+        .then(ip => { if (!primaryDone || !primaryIp) finish(ip); return ip; })
+        .catch(() => { if (primaryDone) finish(primaryIp); return null; });
     };
     const hedge = setTimeout(startBackup, IPV6_HEDGE_MS);
     icanhazip().then(ip => { primaryDone = true; primaryIp = ip; finish(ip); }).catch(() => {
@@ -922,120 +977,161 @@ async function getGeoLocation(ip, initialCountryCode = '', useRecentCache = true
 
 // After a provider fails, the next one is tried only while the lookup's deadline has not passed,
 // so a lookup that already timed out stops sending requests.
+// Hedged waterfall: starts primary geo provider, and hedges with fallbacks if delayed or errored.
 async function fetchGeoLocation(ip, initialCountryCode = '', deadline = Infinity) {
   if (!isValidIPv4(ip) && !isValidIPv6(ip)) throw new Error('Invalid IP address');
+  const hedgeController = new AbortController();
+  const hedgeSignal = hedgeController.signal;
   const timeLeft = (ms) => Math.min(ms, deadline - Date.now());
 
-  try {
-    const res = await fetchWithTimeout(`https://ipwho.is/${ip}`, {}, timeLeft(3000));
-    if (res.ok) {
-      const data = await res.json();
-      // ipwho.is reports its rate limit as a normal answer with success: false.
-      if (data && data.success === false && /limit|quota|too many/i.test(data.message || '')) {
-        await markProviderCooldown('https://ipwho.is', 15 * 60_000);
-      }
-      if (data && data.success) {
-        const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
-        const countryName = getFullCountryName(countryCode, data.country);
-        const ispStr = (data.connection && (data.connection.isp || data.connection.org)) || 'N/A';
-        const connType = classifyConnectionType({
-          isp: ispStr,
-          org: data.connection?.org,
-          domain: data.connection?.domain,
-          type: data.connection?.type,
-          isVpn: data.connection?.is_vpn,
-          isProxy: data.connection?.is_proxy,
-          isHosting: data.connection?.is_datacenter
-        });
-
-        return {
-          ip,
-          country: countryName,
-          countryCode: countryCode,
-          city: cleanPlace(data.city),
-          region: cleanPlace(data.region),
-          isp: ispStr,
-          asn: data.connection && data.connection.asn ? `AS${data.connection.asn}` : 'N/A',
-          timezone: (data.timezone && data.timezone.id) || 'N/A',
-          connectionType: connType,
-          ...normalizeLatLon(data.latitude, data.longitude),
-          updatedAt: Date.now()
-        };
-      }
+  const tryIpwho = async () => {
+    if (timeLeft(3000) <= 0) throw new Error('Timeout');
+    const res = await fetchWithTimeout(`https://ipwho.is/${ip}`, { signal: hedgeSignal }, timeLeft(3000));
+    if (!res.ok) throw new Error('ipwho failed');
+    const data = await res.json();
+    if (data && data.success === false && /limit|quota|too many/i.test(data.message || '')) {
+      await markProviderCooldown('https://ipwho.is', 15 * 60_000);
     }
-  } catch (e) {}
+    if (!data || !data.success) throw new Error('ipwho invalid');
+    const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
+    const countryName = getFullCountryName(countryCode, data.country);
+    const ispStr = (data.connection && (data.connection.isp || data.connection.org)) || 'N/A';
+    const connType = classifyConnectionType({
+      isp: ispStr,
+      org: data.connection?.org,
+      domain: data.connection?.domain,
+      type: data.connection?.type,
+      isVpn: data.connection?.is_vpn,
+      isProxy: data.connection?.is_proxy,
+      isHosting: data.connection?.is_datacenter
+    });
+    return {
+      ip, country: countryName, countryCode,
+      city: cleanPlace(data.city), region: cleanPlace(data.region),
+      isp: ispStr, asn: data.connection && data.connection.asn ? `AS${data.connection.asn}` : 'N/A',
+      timezone: (data.timezone && data.timezone.id) || 'N/A',
+      connectionType: connType, ...normalizeLatLon(data.latitude, data.longitude), updatedAt: Date.now()
+    };
+  };
 
-  if (timeLeft(3500) <= 0) return unresolvedGeoInfo(ip, initialCountryCode);
-  try {
-    const res = await fetchWithTimeout(`https://get.geojs.io/v1/ip/geo/${ip}.json`, {}, timeLeft(3500));
-    if (res.ok) {
-      const data = await res.json();
-      if (data && (data.country_code || data.country)) {
-        const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
-        const countryName = getFullCountryName(countryCode, data.country);
-        const org = splitAsnPrefix(data.organization);
-        const asnStr = data.asn ? `AS${data.asn}` : (org.asn || 'N/A');
-        const ispStr = data.organization_name || org.name || 'N/A';
-        const connType = classifyConnectionType({
-          isp: ispStr,
-          org: data.organization || data.organization_name
-        });
+  const tryGeojs = async () => {
+    if (timeLeft(3000) <= 0) throw new Error('Timeout');
+    const res = await fetchWithTimeout(`https://get.geojs.io/v1/ip/geo/${ip}.json`, { signal: hedgeSignal }, timeLeft(3000));
+    if (!res.ok) throw new Error('geojs failed');
+    const data = await res.json();
+    if (!data || (!data.country_code && !data.country)) throw new Error('geojs invalid');
+    const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
+    const countryName = getFullCountryName(countryCode, data.country);
+    const org = splitAsnPrefix(data.organization);
+    const asnStr = data.asn ? `AS${data.asn}` : (org.asn || 'N/A');
+    const ispStr = data.organization_name || org.name || 'N/A';
+    const connType = classifyConnectionType({ isp: ispStr, org: data.organization || data.organization_name });
+    return {
+      ip, country: countryName, countryCode,
+      city: cleanPlace(data.city), region: cleanPlace(data.region),
+      isp: ispStr, asn: asnStr, timezone: data.timezone || 'N/A',
+      connectionType: connType, ...normalizeLatLon(data.latitude, data.longitude), updatedAt: Date.now()
+    };
+  };
 
-        return {
-          ip,
-          country: countryName,
-          countryCode: countryCode,
-          city: cleanPlace(data.city),
-          region: cleanPlace(data.region),
-          isp: ispStr,
-          asn: asnStr,
-          timezone: data.timezone || 'N/A',
-          connectionType: connType,
-          ...normalizeLatLon(data.latitude, data.longitude),
-          updatedAt: Date.now()
-        };
-      }
+  const trySeeip = async () => {
+    if (timeLeft(3000) <= 0) throw new Error('Timeout');
+    const res = await fetchWithTimeout(`https://api.seeip.org/geoip/${ip}`, { signal: hedgeSignal }, timeLeft(3000));
+    if (!res.ok) throw new Error('seeip failed');
+    const data = await res.json();
+    if (!data || (!data.country_code && !data.country)) throw new Error('seeip invalid');
+    const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
+    const countryName = getFullCountryName(countryCode, data.country);
+    const org = splitAsnPrefix(data.organization);
+    const asnStr = data.asn ? (String(data.asn).startsWith('AS') ? String(data.asn) : `AS${data.asn}`) : (org.asn || 'N/A');
+    const ispStr = org.name || data.organization || 'N/A';
+    const connType = classifyConnectionType({ isp: ispStr, org: data.organization });
+    return {
+      ip, country: countryName, countryCode,
+      city: cleanPlace(data.city), region: cleanPlace(data.region),
+      isp: ispStr, asn: asnStr, timezone: data.timezone || 'N/A',
+      connectionType: connType, ...normalizeLatLon(data.latitude, data.longitude), updatedAt: Date.now()
+    };
+  };
+
+  const tryIpinfo = async () => {
+    if (timeLeft(3000) <= 0) throw new Error('Timeout');
+    const res = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`, { signal: hedgeSignal }, timeLeft(3000));
+    if (!res.ok) throw new Error('ipinfo failed');
+    const data = await res.json();
+    if (data?.error && /limit|quota|too many/i.test(JSON.stringify(data.error))) {
+      await markProviderCooldown('https://ipinfo.io', 15 * 60_000);
     }
-  } catch (e) {}
+    if (!data || (!data.country && !data.org) || data.error) throw new Error('ipinfo invalid');
+    const countryCode = normalizeCountryCode(data.country) || normalizeCountryCode(initialCountryCode);
+    const countryName = getFullCountryName(countryCode, '');
+    const [lat, lon] = typeof data.loc === 'string' ? data.loc.split(',') : [];
+    const org = splitAsnPrefix(data.org);
+    const asnStr = org.asn || 'N/A';
+    const ispStr = org.name || 'N/A';
+    const connType = classifyConnectionType({ isp: ispStr, org: data.org });
+    return {
+      ip, country: countryName, countryCode,
+      city: cleanPlace(data.city), region: cleanPlace(data.region),
+      isp: ispStr, asn: asnStr, timezone: data.timezone || 'N/A',
+      connectionType: connType, ...normalizeLatLon(lat, lon), updatedAt: Date.now()
+    };
+  };
 
-  if (timeLeft(3500) <= 0) return unresolvedGeoInfo(ip, initialCountryCode);
-  try {
-    const res = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`, {}, timeLeft(3500));
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.error && /limit|quota|too many/i.test(JSON.stringify(data.error))) {
-        await markProviderCooldown('https://ipinfo.io', 15 * 60_000);
-      }
-      if (data && (data.country || data.org) && !data.error) {
-        const countryCode = normalizeCountryCode(data.country) || normalizeCountryCode(initialCountryCode);
-        const countryName = getFullCountryName(countryCode, '');
-        const [lat, lon] = typeof data.loc === 'string' ? data.loc.split(',') : [];
-        const org = splitAsnPrefix(data.org);
-        const asnStr = org.asn || 'N/A';
-        const ispStr = org.name || 'N/A';
-        const connType = classifyConnectionType({
-          isp: ispStr,
-          org: data.org
-        });
+  return new Promise((resolve) => {
+    let resolved = false;
+    let pendingCount = 0;
+    const timers = [];
 
-        return {
-          ip,
-          country: countryName,
-          countryCode: countryCode,
-          city: cleanPlace(data.city),
-          region: cleanPlace(data.region),
-          isp: ispStr,
-          asn: asnStr,
-          timezone: data.timezone || 'N/A',
-          connectionType: connType,
-          ...normalizeLatLon(lat, lon),
-          updatedAt: Date.now()
-        };
-      }
-    }
-  } catch (e) {}
+    const finish = (result) => {
+      if (resolved) return;
+      resolved = true;
+      timers.forEach(t => clearTimeout(t));
+      try { hedgeController.abort(); } catch (e) {}
+      resolve(result || unresolvedGeoInfo(ip, initialCountryCode));
+    };
 
-  return unresolvedGeoInfo(ip, initialCountryCode);
+    let p2Started = false;
+    let p34Started = false;
+
+    const startP34 = () => {
+      if (p34Started || resolved) return;
+      p34Started = true;
+      pendingCount += 2;
+      trySeeip().then(finish).catch(() => {
+        pendingCount--;
+        if (pendingCount <= 0) finish(null);
+      });
+      tryIpinfo().then(finish).catch(() => {
+        pendingCount--;
+        if (pendingCount <= 0) finish(null);
+      });
+    };
+
+    const startP2 = () => {
+      if (p2Started || resolved) return;
+      p2Started = true;
+      pendingCount++;
+      const timerP34 = setTimeout(startP34, 1200);
+      timers.push(timerP34);
+      tryGeojs().then(finish).catch(() => {
+        clearTimeout(timerP34);
+        startP34();
+        pendingCount--;
+        if (pendingCount <= 0) finish(null);
+      });
+    };
+
+    pendingCount++;
+    const timerP2 = setTimeout(startP2, 1200);
+    timers.push(timerP2);
+    tryIpwho().then(finish).catch(() => {
+      clearTimeout(timerP2);
+      startP2();
+      pendingCount--;
+      if (pendingCount <= 0) finish(null);
+    });
+  });
 }
 
 // Result when no geolocation provider answered: never a "Locating..." placeholder.
@@ -1442,7 +1538,8 @@ async function applyPrivacyShieldNow() {
  */
 const WATCHER_TRACE_URLS = [
   'https://cloudflare.com/cdn-cgi/trace',
-  'https://www.cloudflare.com/cdn-cgi/trace'
+  'https://v4.ident.me',
+  'https://api.seeip.org'
 ];
 
 async function queryIdleState(seconds) {
@@ -1479,29 +1576,40 @@ async function runWatcherTick() {
   const now = Date.now();
   const candidates = [];
   for (let i = 0; i < WATCHER_TRACE_URLS.length; i++) {
-    const candidate = WATCHER_TRACE_URLS[(watcherTraceIndex + i) % WATCHER_TRACE_URLS.length];
-    if ((providerCooldowns[new URL(candidate).origin] || 0) <= now) candidates.push(candidate);
+    const index = (watcherTraceIndex + i) % WATCHER_TRACE_URLS.length;
+    const candidate = WATCHER_TRACE_URLS[index];
+    const origin = new URL(candidate).origin;
+    if (!isOriginCoolingDown(origin)) candidates.push({ url: candidate, index });
   }
-  watcherTraceIndex++;
   if (!candidates.length) return;
 
   let traceText = null;
-  for (const url of candidates) {
-    const origin = new URL(url).origin;
+  const failedOrigins = [];
+  let successfulIndex = -1;
+
+  for (const item of candidates) {
+    const origin = new URL(item.url).origin;
     try {
-      const res = await fetchWithTimeout(url, {}, 2000);
+      const res = await fetchWithTimeout(item.url, {}, 2000);
       if (cGen !== clearGeneration) return;
       if (res?.ok) {
         traceText = await res.text();
+        successfulIndex = item.index;
         break;
       }
-      if ((providerCooldowns[origin] || 0) > Date.now()) continue;
-      break;
+      failedOrigins.push(origin);
     } catch (e) {
-      if ((providerCooldowns[origin] || 0) > Date.now()) continue;
-      traceText = null;
-      break;
+      failedOrigins.push(origin);
     }
+  }
+
+  if (successfulIndex >= 0) {
+    watcherTraceIndex = successfulIndex;
+    for (const origin of failedOrigins) {
+      markNetworkCooldown(origin, 10 * 60_000);
+    }
+  } else {
+    traceText = null;
   }
 
   let traceIp = null;
@@ -1509,7 +1617,13 @@ async function runWatcherTick() {
   if (traceText) {
     const ipMatch = traceText.match(/^ip=([^\r\n]+)/m);
     const locMatch = traceText.match(/^loc=([^\r\n]+)/m);
-    const ip = ipMatch ? ipMatch[1].trim() : traceText.trim();
+    let ip = ipMatch ? ipMatch[1].trim() : traceText.trim();
+    if (!isValidIPv4(ip) && !isValidIPv6(ip)) {
+      try {
+        const parsed = JSON.parse(traceText);
+        if (parsed && typeof parsed.ip === 'string') ip = parsed.ip.trim();
+      } catch (e) {}
+    }
     if (isValidIPv4(ip) || isValidIPv6(ip)) {
       traceIp = ip;
       traceLoc = locMatch && locMatch[1] ? normalizeCountryCode(locMatch[1].trim()) : '';
@@ -1531,10 +1645,11 @@ async function runWatcherTick() {
     const isV6 = traceIp.includes(':');
     if (!isV6) cfTraceV6Until = 0;
     const ip = isV6 ? canonicalIPv6(traceIp) : traceIp;
-    key = `${ip}|${traceLoc}`;
     const shown = isV6 ? stored.latestV6Info : stored.latestV4Info;
     const shownIp = shown?.ip ? (isV6 ? canonicalIPv6(shown.ip) : shown.ip) : null;
     const shownCountry = normalizeCountryCode(shown?.countryCode);
+    const effectiveLoc = traceLoc || (shownIp === ip ? shownCountry : '');
+    key = `${ip}|${effectiveLoc}`;
     const differs = !shownIp || ip !== shownIp || (!!shownCountry && !!traceLoc && shownCountry !== traceLoc);
     const retryUnverified = !isV6 && stored.v4Unverified === true && (now - lastUnverifiedWatcherAt >= 15_000);
     shouldTrigger = stored.isOffline === true || stored.probeError === true || retryUnverified || (differs && key !== lastTraceKey);
@@ -1555,7 +1670,7 @@ async function runWatcherTick() {
     const isV6Trace = !!traceIp && traceIp.includes(':');
     fetchAllBackgroundLocations(true).then((res) => {
       if (!expectedIp || isV6Trace) return;
-      if (res?.v4Info?.vantage !== 'edge' && lastTraceKey === key) {
+      if (res?.v4Info?.vantage !== 'edge' && lastTraceKey === key && res?.v4Info?.ip !== expectedIp) {
         lastTraceKey = '';
       }
     }).catch(() => {});
@@ -1741,6 +1856,7 @@ async function clearStoredIpData() {
   await chrome.storage.session?.clear().catch(() => {});
   geoMemoryCache.clear();
   for (const key of Object.keys(providerCooldowns)) delete providerCooldowns[key];
+  clearNetworkCooldowns();
   appliedToolbarKey = '';
   activeProbePromise = null;
   queuedForceProbePromise = null;
@@ -1861,6 +1977,7 @@ chrome.storage.onChanged?.addListener((changes, area) => {
 if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
   self.addEventListener('online', () => {
     cfTraceV6Until = 0;
+    clearNetworkCooldowns();
     syncWatcher().catch(() => {});
     resetOfflineRetry();
     resetErrGrace();

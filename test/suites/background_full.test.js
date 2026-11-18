@@ -1134,6 +1134,91 @@ test('background review prompt synchronization and edge cases', async () => {
   assert.equal(data3.reviewPrompt.completed, true);
 });
 
+test('Russian and blocked-region multi-cloud failover, hedged geo, and sticky watcher', async () => {
+  const requests = [];
+  const body = (obj, ok = true, status = 200) => ({
+    ok, status, headers: { get: () => null },
+    text: async () => typeof obj === 'string' ? obj : JSON.stringify(obj),
+    json: async () => obj
+  });
+  const h = createBackgroundHarness({
+    fetch: async (url, opts = {}) => {
+      requests.push(url);
+      if (url.includes('cloudflare.com') || url.includes('icanhazip.com')) {
+        throw new Error('Blocked by RKN / DPI');
+      }
+      if (url.includes('api.ipify.org') || url.includes('api6.ipify.org')) {
+        throw new Error('Blocked by RKN / DPI');
+      }
+      if (url.startsWith('https://v4.ident.me')) {
+        return body('198.51.100.99\n');
+      }
+      if (url.startsWith('https://v6.ident.me')) {
+        return body('2001:db8::99\n');
+      }
+      if (url.startsWith('https://ipv4.seeip.org')) {
+        return body('198.51.100.99\n');
+      }
+      if (url.startsWith('https://ipv6.seeip.org')) {
+        return body('2001:db8::99\n');
+      }
+      if (url.includes('ipwho.is') || url.includes('geojs.io')) {
+        throw new Error('Service down or blocked');
+      }
+      if (url.startsWith('https://api.seeip.org/geoip')) {
+        return body({
+          ip: '198.51.100.99',
+          country_code: 'RU',
+          country: 'Russian Federation',
+          region: 'Moscow',
+          organization: 'AS12389 Rostelecom'
+        });
+      }
+      if (url.startsWith('https://api.seeip.org')) {
+        return body({ ip: '198.51.100.99' });
+      }
+      return body('', false, 500);
+    }
+  });
+  const c = h.context;
+  vm.runInContext('ROUTE_MIN_PERSIST_MS = 0', c);
+
+  // 1. Initial probes when Cloudflare is down: takes 2 consecutive probes to promote fallback
+  await vm.runInContext('fetchAllBackgroundLocations(true)', c);
+  const res = await vm.runInContext('fetchAllBackgroundLocations(true)', c);
+  assert.equal(res.v4Info.ip, '198.51.100.99');
+  assert.equal(res.v4Info.countryCode, 'RU');
+  assert.equal(res.v4Info.vantage, 'independent');
+  assert.equal(res.v4Info.asn, 'AS12389');
+  assert.equal(res.v4Info.isp, 'Rostelecom');
+  assert.equal(res.v6Info.ip, '2001:db8::99');
+
+  // 2. Watcher stickiness under Cloudflare failure:
+  await vm.runInContext('watcherRunning = true; traceSucceededOnce = true', c);
+  await vm.runInContext('runWatcherTick()', c);
+  assert.equal(vm.runInContext('watcherTraceIndex', c), 1, 'Watcher index sticks to v4.ident.me');
+  assert.equal(vm.runInContext('isOriginCoolingDown("https://cloudflare.com")', c), true, 'Cloudflare origin is placed in cooldown');
+
+  // Subsequent tick: because of sticky failover and cooldown, Cloudflare is NOT hit
+  const reqLenBefore = requests.length;
+  await vm.runInContext('runWatcherTick()', c);
+  const newRequests = requests.slice(reqLenBefore);
+  assert.ok(!newRequests.some(u => u.includes('cloudflare.com')), 'No Cloudflare probe while in sticky failover');
+  assert.ok(newRequests.some(u => u.includes('v4.ident.me')), 'v4.ident.me is queried directly');
+
+  // 3. Cooldown reset on manual refresh
+  await vm.runInContext('probePublicIPv4(true)', c);
+  assert.equal(vm.runInContext('isOriginCoolingDown("https://cloudflare.com")', c), false, 'Cooldown cleared on manual probe');
+
+  // 4. Pre-aborted signal in fetchWithTimeout coverage
+  const abortCtrl = new c.AbortController();
+  abortCtrl.abort();
+  await assert.rejects(
+    async () => vm.runInContext('fetchWithTimeout("https://v4.ident.me", { signal: abortCtrl.signal })', c),
+    /abort|cooling down|failed/i
+  );
+});
+
 if (require.main === module) {
   run().then(r => process.exit(r.failed > 0 ? 1 : 0));
 }

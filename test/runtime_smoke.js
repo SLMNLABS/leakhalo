@@ -27,6 +27,7 @@ let notifyGeoStarted = null;
 let rateLimitIpify = false;
 let ipifyV4 = null; // null = ipify sees the same IP as Cloudflare
 let cloudflareDown = false;
+let watcherDown = false;
 let stallBody = null; // () => true makes response bodies hang after headers
 let stallIpify = false;
 let geoDown = false;
@@ -123,7 +124,22 @@ const context = vm.createContext({
     }
     if (url.startsWith('https://api6.ipify.org')) return currentV6 ? result({ ip: currentV6 }) : result({ ip: 'invalid' });
     if (url.startsWith('https://ipv6.icanhazip.com')) return currentV6 ? result(`${currentV6}\n`) : result('invalid');
-    if (geoDown && /ipwho\.is|geojs\.io|ipinfo\.io/.test(url)) return result('', false, 503);
+    if (url.startsWith('https://v4.ident.me')) return watcherDown ? result('', false) : result(`${currentV4}\n`);
+    if (url.startsWith('https://v6.ident.me')) return currentV6 ? result(`${currentV6}\n`) : result('invalid');
+    if (url.startsWith('https://ipv4.seeip.org')) return watcherDown ? result('', false) : result(`${currentV4}\n`);
+    if (url.startsWith('https://ipv6.seeip.org')) return currentV6 ? result(`${currentV6}\n`) : result('invalid');
+    if (url.startsWith('https://api.seeip.org/geoip')) {
+      if (geoDown) return result('', false, 503);
+      return result({
+        ip: currentV4,
+        country_code: 'US',
+        country: 'United States',
+        region: 'California',
+        organization: 'AS64500 Example ISP'
+      });
+    }
+    if (url.startsWith('https://api.seeip.org')) return watcherDown ? result('', false) : result({ ip: currentV4 });
+    if (geoDown && /ipwho\.is|geojs\.io|ipinfo\.io|seeip\.org/.test(url)) return result('', false, 503);
     if (url.startsWith('https://ipwho.is/')) {
       if (geoGate) { notifyGeoStarted(); await geoGate; }
       return result({
@@ -784,6 +800,7 @@ async function main() {
 
     // 5. A failed trace -> one probe for the whole failure streak
     cloudflareDown = true;
+    watcherDown = true;
     beforeProbes = probes();
     await vm.runInContext('runWatcherTick()', context);
     await vm.runInContext('activeProbePromise', context);
@@ -795,6 +812,7 @@ async function main() {
       assert.equal(probes() - beforeProbes, 1, 'later failures do not trigger another probe');
     }
     cloudflareDown = false; // restore
+    watcherDown = false;
 
     // 6. Idle -> loop stops
     await vm.runInContext('startWatcher()', context);

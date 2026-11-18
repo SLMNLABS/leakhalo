@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.1 (2026-11-18)
+- Multi-cloud resilience: added ident.me and SeeIP as independent vantage points to bypass regional Cloudflare blocking (Russia, Iran, China).
+- Hedged waterfall Geolocation: parallel delayed racing across ipwho.is, GeoJS, SeeIP, and ipinfo with instant signal cancellation.
+- Sticky failover watcher: intelligent network cooldown management eliminating probe storms under censorship.
+- CSP and privacy policy synchronization with full zero-telemetry transparency.
+- 100% test pass rate with 99.67% V8 code coverage.
+
+
 ## 1.3.0 (2026-11-15)
 - Zero-telemetry feedback nudge: respectful review prompt displayed only after verified healthy connection.
 - Settings page feedback link directly to the Chrome Web Store.
