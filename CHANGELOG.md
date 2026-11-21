@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 (2026-11-21)
+- Geolocation accuracy fix: eliminated stale api.seeip.org provider from geolocation hedged waterfall to fix inaccurate country/ISP mapping on BGP sub-allocated IP blocks (such as Turkish Netlen blocks mapped to US Cogent).
+- Cleaned extension CSP connect-src in manifest.json.
+- Restructured Tier-3 waterfall racing logic with balanced pending counts and signal aborts.
+- Background watcher switched to plain-text ipv4.seeip.org candidate.
+- 100% test pass rate with 100.00% V8 code coverage.
 ## 1.3.1 (2026-11-18)
 - Multi-cloud resilience: added ident.me and SeeIP as independent vantage points to bypass regional Cloudflare blocking (Russia, Iran, China).
 - Hedged waterfall Geolocation: parallel delayed racing across ipwho.is, GeoJS, SeeIP, and ipinfo with instant signal cancellation.
