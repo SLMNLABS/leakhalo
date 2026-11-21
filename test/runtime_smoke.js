@@ -128,18 +128,16 @@ const context = vm.createContext({
     if (url.startsWith('https://v6.ident.me')) return currentV6 ? result(`${currentV6}\n`) : result('invalid');
     if (url.startsWith('https://ipv4.seeip.org')) return watcherDown ? result('', false) : result(`${currentV4}\n`);
     if (url.startsWith('https://ipv6.seeip.org')) return currentV6 ? result(`${currentV6}\n`) : result('invalid');
-    if (url.startsWith('https://api.seeip.org/geoip')) {
+    if (url.startsWith('https://ipinfo.io/')) {
       if (geoDown) return result('', false, 503);
       return result({
         ip: currentV4,
-        country_code: 'US',
-        country: 'United States',
+        country: 'US',
         region: 'California',
-        organization: 'AS64500 Example ISP'
+        org: 'AS64500 Example ISP'
       });
     }
-    if (url.startsWith('https://api.seeip.org')) return watcherDown ? result('', false) : result({ ip: currentV4 });
-    if (geoDown && /ipwho\.is|geojs\.io|ipinfo\.io|seeip\.org/.test(url)) return result('', false, 503);
+    if (geoDown && /ipwho\.is|geojs\.io|ipinfo\.io/.test(url)) return result('', false, 503);
     if (url.startsWith('https://ipwho.is/')) {
       if (geoGate) { notifyGeoStarted(); await geoGate; }
       return result({

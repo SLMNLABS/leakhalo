@@ -105,7 +105,11 @@ function analyzeCoverage(covDir, files = TARGET_FILES) {
     const data = JSON.parse(fs.readFileSync(path.join(covDir, fname), 'utf8'));
     for (const script of (data.result || [])) {
       const url = script.url || '';
-      const info = files.map(tf => fileInfo[tf]).find(f => url.endsWith('/' + f.rel) || url === 'file://' + f.abs);
+      const normUrl = url.replace(/\\/g, '/');
+      const info = files.map(tf => fileInfo[tf]).find(f => {
+        const normAbs = f.abs.replace(/\\/g, '/');
+        return normUrl.endsWith('/' + f.rel) || normUrl === 'file://' + normAbs || normUrl === 'file:///' + normAbs || normUrl === normAbs;
+      });
       if (!info) continue;
       const sc = new Uint32Array(info.len);
       for (const fn of (script.functions || [])) {

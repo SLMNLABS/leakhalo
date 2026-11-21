@@ -792,6 +792,71 @@ test('popup.js review prompt lifecycle, upgrade reprompt, actions, and dismissal
   clock.clearAll();
 });
 
+test('Route divergence flag fallback and forceCheckTimer debounce', async () => {
+  const clock = createClock();
+  const h = createPopupHarness({
+    clock,
+    initialLocal: {
+      latestV4Info: {
+        ip: '198.51.100.22',
+        countryCode: 'US',
+        country: 'United States',
+        isp: 'Cloudflare',
+        asn: '13335'
+      },
+      routeDivergence: {
+        primarySource: 'Cloudflare',
+        primaryIp: '198.51.100.22',
+        alts: [
+          {
+            source: 'ipify',
+            ip: '198.51.100.99',
+            geo: { countryCode: 'DE', country: 'Germany' }
+          }
+        ]
+      },
+      appSettings: {
+        enableAntiLeakShield: true,
+        warnRouteDivergence: true
+      }
+    }
+  });
+
+  await h.init();
+
+  // 1. Verify divergence flag image onerror fallback (L629)
+  const flagImgs = h.document.querySelectorAll('#routeAlertRows img');
+  assert.ok(flagImgs.length > 0, 'Divergence flag images rendered');
+  const img = flagImgs[0];
+  assert.equal(typeof img.onerror, 'function');
+  assert.ok(img.src.includes('/assets/flags-rect/'));
+  img.onerror();
+  assert.equal(img.onerror, null);
+  assert.ok(img.src.includes('/assets/flags/flag-'));
+
+  // 2. Trigger rapid connection changes to exercise forceCheckTimer debounce window (L1075)
+  const sentCheckMessages = [];
+  h.mock.hooks.sendMessageHandler = async (msg) => {
+    if (msg.type === 'CHECK_NETWORK') sentCheckMessages.push(msg);
+    return { status: 'ok' };
+  };
+
+  h.window.dispatchEvent(new DOMEvent('online', { bubbles: false }));
+  assert.equal(sentCheckMessages.length, 1, 'First check dispatched immediately');
+  assert.equal(sentCheckMessages[0].force, true);
+  await clock.flush();
+
+  h.window.dispatchEvent(new DOMEvent('online', { bubbles: false }));
+  assert.equal(sentCheckMessages.length, 1, 'Second check debounced in forceCheckTimer');
+
+  await clock.tick(1500);
+  await clock.flush();
+  assert.equal(sentCheckMessages.length, 2, 'Second forced check executed after debounce timer');
+  assert.equal(sentCheckMessages[1].force, true);
+
+  clock.clearAll();
+});
+
 if (require.main === module) {
   run().then(r => process.exit(r.failed > 0 ? 1 : 0));
 }

@@ -1034,26 +1034,6 @@ async function fetchGeoLocation(ip, initialCountryCode = '', deadline = Infinity
     };
   };
 
-  const trySeeip = async () => {
-    if (timeLeft(3000) <= 0) throw new Error('Timeout');
-    const res = await fetchWithTimeout(`https://api.seeip.org/geoip/${ip}`, { signal: hedgeSignal }, timeLeft(3000));
-    if (!res.ok) throw new Error('seeip failed');
-    const data = await res.json();
-    if (!data || (!data.country_code && !data.country)) throw new Error('seeip invalid');
-    const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
-    const countryName = getFullCountryName(countryCode, data.country);
-    const org = splitAsnPrefix(data.organization);
-    const asnStr = data.asn ? (String(data.asn).startsWith('AS') ? String(data.asn) : `AS${data.asn}`) : (org.asn || 'N/A');
-    const ispStr = org.name || data.organization || 'N/A';
-    const connType = classifyConnectionType({ isp: ispStr, org: data.organization });
-    return {
-      ip, country: countryName, countryCode,
-      city: cleanPlace(data.city), region: cleanPlace(data.region),
-      isp: ispStr, asn: asnStr, timezone: data.timezone || 'N/A',
-      connectionType: connType, ...normalizeLatLon(data.latitude, data.longitude), updatedAt: Date.now()
-    };
-  };
-
   const tryIpinfo = async () => {
     if (timeLeft(3000) <= 0) throw new Error('Timeout');
     const res = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`, { signal: hedgeSignal }, timeLeft(3000));
@@ -1092,16 +1072,12 @@ async function fetchGeoLocation(ip, initialCountryCode = '', deadline = Infinity
     };
 
     let p2Started = false;
-    let p34Started = false;
+    let p3Started = false;
 
-    const startP34 = () => {
-      if (p34Started || resolved) return;
-      p34Started = true;
-      pendingCount += 2;
-      trySeeip().then(finish).catch(() => {
-        pendingCount--;
-        if (pendingCount <= 0) finish(null);
-      });
+    const startP3 = () => {
+      if (p3Started || resolved) return;
+      p3Started = true;
+      pendingCount++;
       tryIpinfo().then(finish).catch(() => {
         pendingCount--;
         if (pendingCount <= 0) finish(null);
@@ -1112,11 +1088,11 @@ async function fetchGeoLocation(ip, initialCountryCode = '', deadline = Infinity
       if (p2Started || resolved) return;
       p2Started = true;
       pendingCount++;
-      const timerP34 = setTimeout(startP34, 1200);
-      timers.push(timerP34);
+      const timerP3 = setTimeout(startP3, 1200);
+      timers.push(timerP3);
       tryGeojs().then(finish).catch(() => {
-        clearTimeout(timerP34);
-        startP34();
+        clearTimeout(timerP3);
+        startP3();
         pendingCount--;
         if (pendingCount <= 0) finish(null);
       });
@@ -1539,7 +1515,7 @@ async function applyPrivacyShieldNow() {
 const WATCHER_TRACE_URLS = [
   'https://cloudflare.com/cdn-cgi/trace',
   'https://v4.ident.me',
-  'https://api.seeip.org'
+  'https://ipv4.seeip.org'
 ];
 
 async function queryIdleState(seconds) {

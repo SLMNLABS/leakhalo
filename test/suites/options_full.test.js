@@ -456,6 +456,42 @@ test('options.js deep edge branches: initial limited policy, revert non-field ra
   clock.clearAll();
 });
 
+test('options.js policy card click, import config trigger, and initial hash navigation', async () => {
+  const clock = createClock();
+
+  // 1. Initial Hash navigation (L332-334)
+  const hHash = createOptionsHarness({ clock });
+  hHash.window.location.hash = '#notifications';
+  await hHash.init();
+  const notifNav = hHash.document.querySelector('.nav-item[href="#notifications"]');
+  assert.ok(notifNav?.classList.contains('active'), 'Navigation item active from initial hash');
+
+  // 2. Strict policy card click (L215)
+  const h = createOptionsHarness({
+    clock,
+    initialLocal: {
+      appSettings: { antiLeakPolicy: 'default_public_interface_only', enableAntiLeakShield: true },
+      shieldEffective: true
+    }
+  });
+  await h.init();
+  const strictCard = h.document.getElementById('policyCardStrict');
+  assert.equal(strictCard.getAttribute('aria-checked'), 'false');
+  strictCard.click();
+  await clock.flush();
+  assert.equal(strictCard.getAttribute('aria-checked'), 'true');
+
+  // 3. Import config button triggers file input click (L374)
+  const importBtn = h.document.getElementById('importConfigBtn');
+  const importInput = h.document.getElementById('importConfigInput');
+  let inputClicked = false;
+  importInput.click = () => { inputClicked = true; };
+  importBtn.click();
+  assert.equal(inputClicked, true, 'importConfigInput.click() invoked by import button');
+
+  clock.clearAll();
+});
+
 if (require.main === module) {
   run().then(r => process.exit(r.failed > 0 ? 1 : 0));
 }

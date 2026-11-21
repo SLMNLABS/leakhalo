@@ -130,7 +130,12 @@ function createBackgroundHarness(overrides = {}) {
     i18n: { getMessage: () => '' }
   };
 
-  const defaultFetch = async (url) => {
+  const defaultFetch = async (url, opts) => {
+    if (opts?.signal?.aborted) {
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
     requests.push(url);
     const body = (obj, ok = true, status = 200, headers = {}) => ({
       ok, status,
@@ -179,7 +184,14 @@ function createBackgroundHarness(overrides = {}) {
     clearTimeout,
     navigator: { onLine: true },
     createImageBitmap: async () => ({ width: 48, height: 48, close() {} }),
-    fetch: async (url, opts) => fetchHandler(url, opts),
+    fetch: async (url, opts) => {
+      if (opts?.signal?.aborted) {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      return fetchHandler(url, opts);
+    },
     addEventListener(event, fn) { selfEvents[event] = fn; },
     OffscreenCanvas
   };
@@ -198,6 +210,26 @@ function createBackgroundHarness(overrides = {}) {
     toolbar,
     listeners,
     selfEvents,
+    teardown() {
+      try {
+        vm.runInContext(`
+          if (typeof stopWatcher === "function") stopWatcher();
+          if (typeof resetOfflineRetry === "function") resetOfflineRetry();
+          if (typeof resetErrGrace === "function") resetErrGrace();
+          if (typeof offlineRetry !== "undefined" && offlineRetry.timer) {
+            clearTimeout(offlineRetry.timer);
+            offlineRetry.timer = null;
+          }
+          if (typeof errRetryTimer !== "undefined" && errRetryTimer) {
+            clearTimeout(errRetryTimer);
+            errRetryTimer = null;
+          }
+          watcherGeneration++;
+          clearGeneration++;
+          probeGeneration++;
+        `, context);
+      } catch (e) {}
+    },
     get policyValue() { return policyValue; },
     get predictionValue() { return predictionValue; }
   };
@@ -800,6 +832,7 @@ test('Decision engine evaluateIPv4Route fallback confirmations, route withdrawal
   if (h.listeners.startup) await h.listeners.startup();
   if (h.selfEvents.online) await h.selfEvents.online();
   if (h.selfEvents.offline) await h.selfEvents.offline();
+  h.teardown();
 });
 
 test('Memory cache hit, 403 cooldown, 429 Retry-After date, country change alerts, and ensureAlarm', async () => {
@@ -858,6 +891,7 @@ test('Memory cache hit, 403 cooldown, 429 Retry-After date, country change alert
   // 8. Action setIcon error fallback in updateToolbarDisplay
   h.chrome.action.setIcon = async () => { throw new Error('icon error'); };
   await vm.runInContext('updateToolbarDisplay({ countryCode: "US" }, null, false, false)', c);
+  h.teardown();
 });
 
 test('evaluateIPv4Route matrix, cached probe skips, IPv6 notices, and idle watcher', async () => {
@@ -910,6 +944,7 @@ test('evaluateIPv4Route matrix, cached probe skips, IPv6 notices, and idle watch
   // 6. scheduleErrRetry timer firing
   vm.runInContext('scheduleErrRetry(5)', c);
   await new Promise(r => setTimeout(r, 15));
+  h.teardown();
 });
 
 test('Background deep edge branches: canvas fallback, notification error, streams, probes, and watcher', async () => {
@@ -997,6 +1032,7 @@ test('Background deep edge branches: canvas fallback, notification error, stream
   });
   hProbeErr.context.cfTraceV6Until = Date.now() + 60_000;
   await vm.runInContext('probePublicIPv4(true)', hProbeErr.context).catch(() => {});
+  hProbeErr.teardown();
 
   // 5. getFastPublicIPv6 error branches (covers L779, L783, L785)
   const hV6Err = createBackgroundHarness({
@@ -1007,14 +1043,20 @@ test('Background deep edge branches: canvas fallback, notification error, stream
     }
   });
   await vm.runInContext('getFastPublicIPv6()', hV6Err.context);
+  hV6Err.teardown();
 
   // 6. getFullCountryName custom fallback (covers L821)
   assert.equal(vm.runInContext('getFullCountryName("XX", "CustomCountryName")', c), 'CustomCountryName');
 
-  // 7. scheduleOfflineRetry timer execution (covers L1110-1112)
-  c.OFFLINE_RETRY_MS = [5];
-  vm.runInContext('scheduleOfflineRetry(true)', c);
-  await new Promise(r => setTimeout(r, 20));
+  // 7. scheduleOfflineRetry timer scheduling check (covers L1202-1205)
+  vm.runInContext(`
+    scheduleOfflineRetry(true);
+    if (offlineRetry.timer) {
+      clearTimeout(offlineRetry.timer);
+      offlineRetry.timer = null;
+    }
+    resetOfflineRetry();
+  `, c);
 
   // 8. errRetryStep progression within grace period (covers L1256, L1257, L1260)
   const hGrace = createBackgroundHarness({
@@ -1024,6 +1066,7 @@ test('Background deep edge branches: canvas fallback, notification error, stream
     }
   });
   await vm.runInContext('fetchAllBackgroundLocations(true)', hGrace.context);
+  hGrace.teardown();
 
   // 9. retainedV4 pending true in fetchAllBackgroundLocations (covers L1299-1301)
   const hRetainedPending = createBackgroundHarness({
@@ -1041,6 +1084,7 @@ test('Background deep edge branches: canvas fallback, notification error, stream
     routeState: { announcedIp: '198.51.100.77' }
   });
   await vm.runInContext('fetchAllBackgroundLocations(true)', hRetainedPending.context);
+  hRetainedPending.teardown();
 
   // 10. pendingV6Notice from === to (covers L1341-1342)
   const hV6Notice = createBackgroundHarness();
@@ -1049,6 +1093,7 @@ test('Background deep edge branches: canvas fallback, notification error, stream
     appSettings: { notifyIPv6: false }
   });
   await vm.runInContext('fetchAllBackgroundLocations(true)', hV6Notice.context);
+  hV6Notice.teardown();
 
   // 11. applyPrivacyShieldNow dns prefetch clear branch (covers L1428)
   await h.chrome.storage.local.set({ appSettings: { enableDnsPrefetchBlock: false, enableAntiLeakShield: false } });
@@ -1072,6 +1117,7 @@ test('Background deep edge branches: canvas fallback, notification error, stream
     latestV4Info: { ip: '198.51.100.1', countryCode: 'US' }
   });
   if (h.selfEvents.online) await h.selfEvents.online();
+  h.teardown();
 });
 
 test('background review prompt synchronization and edge cases', async () => {
@@ -1123,6 +1169,7 @@ test('background review prompt synchronization and edge cases', async () => {
     return origGet.call(hErr.chrome.storage.local, keys, cb);
   };
   await vm.runInContext('syncReviewPromptState()', hErr.context);
+  hErr.teardown();
 
   // 5. clearStoredIpData does NOT delete reviewPrompt
   await h.chrome.storage.local.set({
@@ -1132,6 +1179,7 @@ test('background review prompt synchronization and edge cases', async () => {
   await vm.runInContext('clearStoredIpData()', c);
   const data3 = await h.chrome.storage.local.get('reviewPrompt');
   assert.equal(data3.reviewPrompt.completed, true);
+  h.teardown();
 });
 
 test('Russian and blocked-region multi-cloud failover, hedged geo, and sticky watcher', async () => {
@@ -1165,17 +1213,13 @@ test('Russian and blocked-region multi-cloud failover, hedged geo, and sticky wa
       if (url.includes('ipwho.is') || url.includes('geojs.io')) {
         throw new Error('Service down or blocked');
       }
-      if (url.startsWith('https://api.seeip.org/geoip')) {
+      if (url.startsWith('https://ipinfo.io')) {
         return body({
           ip: '198.51.100.99',
-          country_code: 'RU',
-          country: 'Russian Federation',
+          country: 'RU',
           region: 'Moscow',
-          organization: 'AS12389 Rostelecom'
+          org: 'AS12389 Rostelecom'
         });
-      }
-      if (url.startsWith('https://api.seeip.org')) {
-        return body({ ip: '198.51.100.99' });
       }
       return body('', false, 500);
     }
@@ -1210,17 +1254,181 @@ test('Russian and blocked-region multi-cloud failover, hedged geo, and sticky wa
   await vm.runInContext('probePublicIPv4(true)', c);
   assert.equal(vm.runInContext('isOriginCoolingDown("https://cloudflare.com")', c), false, 'Cooldown cleared on manual probe');
 
-  // 4. Pre-aborted signal in fetchWithTimeout coverage
-  const abortCtrl = new c.AbortController();
-  abortCtrl.abort();
+  h.teardown();
+});
+
+test('Response stream cancellation, error body readers, legacy idle callback queries, and watcher trace key divergence reset', async () => {
+  const h = createBackgroundHarness();
+  const c = h.context;
+
+  // 1. Pre-aborted signal in fetchWithTimeout (L449-450)
+  const ac = new c.AbortController();
+  ac.abort();
+  c.testAc = ac;
   await assert.rejects(
-    async () => vm.runInContext('fetchWithTimeout("https://v4.ident.me", { signal: abortCtrl.signal })', c),
-    /abort|cooling down|failed/i
+    async () => vm.runInContext('fetchWithTimeout("https://some-isolated-host.org", { signal: testAc.signal })', c),
+    /The operation was aborted|AbortError/i
   );
+
+  // 2. Fetch error body .text() returns empty string and .json() rejects with /no body/ (L480)
+  const hErr = createBackgroundHarness({
+    fetch: async () => ({
+      ok: false,
+      status: 502,
+      headers: { get: () => null },
+      body: { cancel: async () => {} }
+    })
+  });
+  const errRes = await vm.runInContext('fetchWithTimeout("https://some-502-endpoint.org")', hErr.context);
+  assert.equal(errRes.ok, false);
+  assert.equal(await errRes.text(), '');
+  await assert.rejects(async () => errRes.json(), /no body/i);
+  hErr.teardown();
+
+  // 3. Response body cancellation on oversized payload (>64KB) (L478)
+  let cancelled = false;
+  const hOversized = createBackgroundHarness({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (n) => n.toLowerCase() === 'content-length' ? '100000' : null },
+      body: {
+        cancel: async () => { cancelled = true; }
+      }
+    })
+  });
+  await assert.rejects(
+    async () => vm.runInContext('fetchWithTimeout("https://oversized-payload.org")', hOversized.context),
+    /too large/i
+  );
+  assert.equal(cancelled, true, 'Stream reader cancelled on oversized payload');
+  hOversized.teardown();
+
+  // 4. queryIdleState callback-only legacy signature (L1550)
+  h.chrome.idle.queryState = (seconds, resolve) => {
+    if (typeof resolve === 'function') resolve('active');
+  };
+  const idleState = await vm.runInContext('queryIdleState(60)', c);
+  assert.equal(idleState, 'active');
+  h.teardown();
+
+  // 5. Watcher trace key reset on route divergence (L1674)
+  const hWatcher = createBackgroundHarness({
+    initialLocal: {
+      appSettings: { enableFastDetection: false },
+      isOffline: false,
+      probeError: false,
+      v4Unverified: false,
+      latestV4Info: { ip: '1.2.3.4', countryCode: 'FR', vantage: 'independent' }
+    },
+    fetch: async (url) => {
+      if (url.includes('cdn-cgi/trace') && !url.includes('_t=')) {
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => 'ip=198.51.100.22\nloc=US\n' };
+      }
+      if (url.includes('cdn-cgi/trace') && url.includes('_t=')) {
+        return { ok: false, status: 500, headers: { get: () => null }, body: { cancel: async () => {} } };
+      }
+      if (url.includes('ipify.org') || url.includes('ident.me')) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ip: '198.51.100.99' }), text: async () => '198.51.100.99' };
+      }
+      if (url.includes('ipwho.is') || url.includes('geojs.io')) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ip: '198.51.100.99', country_code: 'DE', country: 'Germany' }), text: async () => JSON.stringify({ ip: '198.51.100.99', country_code: 'DE', country: 'Germany' }) };
+      }
+      return { ok: false, status: 500, headers: { get: () => null }, body: { cancel: async () => {} } };
+    }
+  });
+  const cWatcher = hWatcher.context;
+  const watcherRes = await vm.runInContext(`
+    (async () => {
+      ROUTE_MIN_PERSIST_MS = 0;
+      await new Promise(r => setTimeout(r, 20));
+      watcherRunning = true;
+      traceSucceededOnce = true;
+      clearNetworkCooldowns();
+      for (const k in providerCooldowns) delete providerCooldowns[k];
+      await runWatcherTick();
+      if (activeProbePromise) await activeProbePromise;
+      const { latestV4Info } = await chrome.storage.local.get('latestV4Info');
+      const key = lastTraceKey;
+      return { latestV4Info, key };
+    })();
+  `, cWatcher);
+  assert.equal(watcherRes?.latestV4Info?.ip, '198.51.100.99');
+  assert.equal(watcherRes?.latestV4Info?.vantage, 'independent');
+  assert.equal(watcherRes?.key, '', 'lastTraceKey cleared on independent divergence');
+  hWatcher.teardown();
+
+  // 6. scheduleOfflineRetry timer callback execution in isolated harness (L1205-1209)
+  const hRetry = createBackgroundHarness({
+    initialLocal: { appSettings: { enableAutoRefresh: true } }
+  });
+  const cRetry = hRetry.context;
+  await vm.runInContext(`
+    (async () => {
+      scheduleOfflineRetry(true);
+      assert.ok(offlineRetry.timer !== null, 'offlineRetry.timer was scheduled');
+      const timerFn = offlineRetry.timer._onTimeout || offlineRetry.timer;
+      if (offlineRetry.timer) {
+        clearTimeout(offlineRetry.timer);
+        offlineRetry.timer = null;
+      }
+      if (typeof timerFn === 'function') await timerFn();
+      if (activeProbePromise) await activeProbePromise;
+      assert.equal(offlineRetry.timer, null, 'timer reference cleared after execution');
+    })();
+  `, Object.assign(cRetry, { assert }));
+  hRetry.teardown();
+
+  // 7. Retained pending IPv4 geolocation enrichment in isolated harness (L1395-1397)
+  const geoPayload = {
+    success: true,
+    ip: '198.51.100.33',
+    country_code: 'FR',
+    country: 'France',
+    city: 'Paris',
+    connection: { isp: 'FrenchISP', org: 'FrenchISP', asn: 1234 }
+  };
+  const hRetained = createBackgroundHarness({
+    initialLocal: {
+      latestV4Info: { ip: '198.51.100.33', countryCode: 'FR', pending: true, vantage: 'edge' }
+    },
+    fetch: async (url) => {
+      if (url.includes('cdn-cgi/trace')) return { ok: false, status: 500, headers: { get: () => null } };
+      if (url.includes('ident.me') || url.includes('ipify.org')) {
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => '198.51.100.99', json: async () => ({ ip: '198.51.100.99' }) };
+      }
+      if (url.includes('ipwho.is') || url.includes('geojs.io')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          text: async () => JSON.stringify(geoPayload),
+          json: async () => geoPayload
+        };
+      }
+      return { ok: false, status: 500, headers: { get: () => null } };
+    }
+  });
+  const cRetained = hRetained.context;
+  await vm.runInContext(`
+    (async () => {
+      ROUTE_MIN_PERSIST_MS = 100_000;
+      await fetchAllBackgroundLocations(true);
+      ROUTE_MIN_PERSIST_MS = 15_000;
+      const { latestV4Info } = await chrome.storage.local.get('latestV4Info');
+      assert.equal(latestV4Info?.ip, '198.51.100.33');
+      assert.equal(latestV4Info?.countryCode, 'FR');
+      assert.equal(latestV4Info?.city, 'Paris');
+      assert.equal(latestV4Info?.isp, 'FrenchISP');
+      assert.equal(latestV4Info?.pending, undefined);
+      assert.equal(latestV4Info?.vantage, 'edge');
+    })();
+  `, Object.assign(cRetained, { assert }));
+  hRetained.teardown();
 });
 
 if (require.main === module) {
   run().then(r => process.exit(r.failed > 0 ? 1 : 0));
 }
 
-module.exports = { run };
+module.exports = { run, createBackgroundHarness };

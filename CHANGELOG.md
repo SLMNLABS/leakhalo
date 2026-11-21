@@ -38,3 +38,4 @@
 
 ## 1.0.0 (2026-10-03)
 - Initial public release on the Chrome Web Store.
+

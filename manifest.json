@@ -4,7 +4,7 @@
   "short_name": "LeakHalo",
   "author": "SLMN LABS",
   "homepage_url": "https://slmn-labs.github.io/leakhalo/",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "permissions": [
@@ -38,7 +38,7 @@
     "128": "assets/icons/icon128.png"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' https://cloudflare.com https://www.cloudflare.com https://ipv4.icanhazip.com https://ipv6.icanhazip.com https://api.ipify.org https://api6.ipify.org https://checkip.amazonaws.com https://ipwho.is https://get.geojs.io https://ipinfo.io https://v4.ident.me https://v6.ident.me https://ipv4.seeip.org https://ipv6.seeip.org https://api.seeip.org"
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' https://cloudflare.com https://www.cloudflare.com https://ipv4.icanhazip.com https://ipv6.icanhazip.com https://api.ipify.org https://api6.ipify.org https://checkip.amazonaws.com https://ipwho.is https://get.geojs.io https://ipinfo.io https://v4.ident.me https://v6.ident.me https://ipv4.seeip.org https://ipv6.seeip.org"
   },
   "minimum_chrome_version": "120"
 }
